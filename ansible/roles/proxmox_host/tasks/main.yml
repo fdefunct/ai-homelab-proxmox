@@ -29,7 +29,12 @@
   changed_when: false
   when:
     - not ansible_check_mode
-    - (pve_enterprise_repo_cleanup is defined and pve_enterprise_repo_cleanup.changed) or (pve_no_subscription_repo is defined and pve_no_subscription_repo.changed)
+    - >
+      (
+        (pve_enterprise_repo_cleanup is defined and pve_enterprise_repo_cleanup.changed)
+        or
+        (pve_no_subscription_repo is defined and pve_no_subscription_repo.changed)
+      )
 
 - name: Remove os-prober on dedicated hypervisor hosts
   ansible.builtin.apt:
@@ -66,7 +71,13 @@
       - --policy_out
       - "{{ datacenter_firewall_output_policy }}"
   when:
-    - (pve_cluster_firewall.enable | default('0') | string) != (datacenter_firewall_enabled | ternary('1', '0')) or (pve_cluster_firewall.policy_in | default('')) != datacenter_firewall_input_policy or (pve_cluster_firewall.policy_out | default('')) != datacenter_firewall_output_policy
+    - >
+      (
+        (pve_cluster_firewall.enable | default('0') | string)
+        != (datacenter_firewall_enabled | ternary('1', '0'))
+        or (pve_cluster_firewall.policy_in | default('')) != datacenter_firewall_input_policy
+        or (pve_cluster_firewall.policy_out | default('')) != datacenter_firewall_output_policy
+      )
   changed_when: true
 
 - name: Read current node firewall options

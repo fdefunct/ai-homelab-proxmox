@@ -131,7 +131,11 @@
     - install_tailscale
     - gro_status.stdout is defined
     - >
-      ('rx-udp-gro-forwarding: off' in gro_status.stdout and tailscale_routing_enabled) or ('rx-udp-gro-forwarding: on' in gro_status.stdout and not tailscale_routing_enabled)
+      (
+        ('rx-udp-gro-forwarding: off' in gro_status.stdout and tailscale_routing_enabled)
+        or
+        ('rx-udp-gro-forwarding: on' in gro_status.stdout and not tailscale_routing_enabled)
+      )
 
 - name: Read Tailscale status
   ansible.builtin.command:
@@ -182,8 +186,21 @@
   when: install_tailscale
 
 - name: Enroll the node into Tailscale
-  ansible.builtin.command: >-
-    tailscale up --authkey={{ tailscale_auth_key | quote }} --hostname={{ tailscale_effective_hostname | quote }} {{ '--ssh' if tailscale_ssh else '--ssh=false' }} {{ '--accept-routes' if tailscale_accept_routes else '--accept-routes=false' }} {{ '--accept-dns' if tailscale_accept_dns else '--accept-dns=false' }} {{ '--advertise-exit-node' if tailscale_advertise_exit_node else '' }} {{ '--advertise-routes=' ~ (tailscale_advertise_routes | join(',')) if (tailscale_advertise_routes | length > 0) else '' }}
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - up
+      - "--authkey={{ tailscale_auth_key }}"
+      - "--hostname={{ tailscale_effective_hostname }}"
+      - "{{ '--ssh' if tailscale_ssh else '--ssh=false' }}"
+      - "{{ '--accept-routes' if tailscale_accept_routes else '--accept-routes=false' }}"
+      - "{{ '--accept-dns' if tailscale_accept_dns else '--accept-dns=false' }}"
+      - "{{ '--advertise-exit-node' if tailscale_advertise_exit_node else '' }}"
+      - >-
+        {{
+          '--advertise-routes=' ~ (tailscale_advertise_routes | join(','))
+          if (tailscale_advertise_routes | length > 0) else ''
+        }}
   when:
     - install_tailscale
     - tailscale_auth_key is defined
@@ -206,5 +223,13 @@
     - install_tailscale
     - tailscale_status.rc == 0
     - tailscale_state == 'Running'
-    - (tailscale_prefs.RouteAll | default(false)) != tailscale_accept_routes or (tailscale_prefs.CorpDNS | default(false)) != tailscale_accept_dns or (tailscale_prefs.RunSSH | default(false)) != tailscale_ssh or (tailscale_prefs.Hostname | default('')) != tailscale_effective_hostname or tailscale_current_exit_node_advertised != tailscale_advertise_exit_node or tailscale_current_subnet_routes != (tailscale_advertise_routes | default([], true) | sort)
+    - >
+      (
+        (tailscale_prefs.RouteAll | default(false)) != tailscale_accept_routes
+        or (tailscale_prefs.CorpDNS | default(false)) != tailscale_accept_dns
+        or (tailscale_prefs.RunSSH | default(false)) != tailscale_ssh
+        or (tailscale_prefs.Hostname | default('')) != tailscale_effective_hostname
+        or tailscale_current_exit_node_advertised != tailscale_advertise_exit_node
+        or tailscale_current_subnet_routes != (tailscale_advertise_routes | default([], true) | sort)
+      )
   changed_when: true

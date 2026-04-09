@@ -107,7 +107,16 @@
   when:
     - backup_target_enabled
     - pve_pbs_storage_raw.rc == 0
-    - (pve_pbs_storage.server | default('')) != backup_server or (pve_pbs_storage.port | default(8007) | int) != (backup_port | int) or (pve_pbs_storage.datastore | default('')) != backup_datastore or (pve_pbs_storage.namespace | default('')) != backup_namespace or (pve_pbs_storage.content | default('')) != (backup_content_types | join(',')) or (pve_pbs_storage.fingerprint | default('')) != pbs_backup_fingerprint or (pve_pbs_storage.username | default('')) != pbs_backup_auth_id
+    - >
+      (
+        (pve_pbs_storage.server | default('')) != backup_server
+        or (pve_pbs_storage.port | default(8007) | int) != (backup_port | int)
+        or (pve_pbs_storage.datastore | default('')) != backup_datastore
+        or (pve_pbs_storage.namespace | default('')) != backup_namespace
+        or (pve_pbs_storage.content | default('')) != (backup_content_types | join(','))
+        or (pve_pbs_storage.fingerprint | default('')) != pbs_backup_fingerprint
+        or (pve_pbs_storage.username | default('')) != pbs_backup_auth_id
+      )
 
 - name: Persist PBS storage secret
   ansible.builtin.copy:

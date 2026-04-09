@@ -221,7 +221,12 @@
 - name: Install the pinned custom Caddy binary
   ansible.builtin.get_url:
     url: >-
-      {{ 'https://caddyserver.com/api/download?os=linux&arch=' ~ openclaw_gateway_caddy_arch ~ '&p=' ~ openclaw_gateway_prep_caddy_plugin ~ '&v=' ~ openclaw_gateway_prep_caddy_version }}
+      {{
+        'https://caddyserver.com/api/download?os=linux&arch='
+        ~ openclaw_gateway_caddy_arch
+        ~ '&p=' ~ openclaw_gateway_prep_caddy_plugin
+        ~ '&v=' ~ openclaw_gateway_prep_caddy_version
+      }}
     dest: "{{ openclaw_gateway_prep_caddy_binary_path }}"
     owner: root
     group: root
