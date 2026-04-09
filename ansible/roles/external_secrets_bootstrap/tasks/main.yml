@@ -26,8 +26,16 @@
 
 - name: Read current 1Password Connect token checksum
   ansible.builtin.command:
-    cmd: >-
-      /usr/local/bin/k3s kubectl -n {{ external_secrets_bootstrap_namespace }} get secret {{ external_secrets_bootstrap_token_secret_name }} -o jsonpath={.metadata.annotations.homelab\\.io/token-checksum}
+    argv:
+      - /usr/local/bin/k3s
+      - kubectl
+      - -n
+      - "{{ external_secrets_bootstrap_namespace }}"
+      - get
+      - secret
+      - "{{ external_secrets_bootstrap_token_secret_name }}"
+      - -o
+      - "jsonpath={.metadata.annotations.homelab\\.io/token-checksum}"
   register: external_secrets_connect_token_secret_checksum_result
   failed_when: false
   changed_when: false
@@ -69,8 +77,16 @@
 
 - name: Read current 1Password Connect credentials checksum
   ansible.builtin.command:
-    cmd: >-
-      /usr/local/bin/k3s kubectl -n {{ external_secrets_bootstrap_namespace }} get secret {{ external_secrets_bootstrap_credentials_secret_name }} -o jsonpath={.metadata.annotations.homelab\\.io/credentials-checksum}
+    argv:
+      - /usr/local/bin/k3s
+      - kubectl
+      - -n
+      - "{{ external_secrets_bootstrap_namespace }}"
+      - get
+      - secret
+      - "{{ external_secrets_bootstrap_credentials_secret_name }}"
+      - -o
+      - "jsonpath={.metadata.annotations.homelab\\.io/credentials-checksum}"
   register: external_secrets_connect_credentials_secret_checksum_result
   failed_when: false
   changed_when: false
@@ -101,15 +117,21 @@
   args:
     executable: /bin/bash
   register: external_secrets_connect_credentials_secret_result
-  changed_when: >
-    'created' in external_secrets_connect_credentials_secret_result.stdout or 'configured' in external_secrets_connect_credentials_secret_result.stdout
+  changed_when: >-
+    {{ external_secrets_connect_credentials_secret_result.stdout is search('created|configured') }}
   when: external_secrets_connect_credentials_secret_update_required
   no_log: true
 
 - name: Wait for 1Password Connect deployment readiness
   ansible.builtin.command:
-    cmd: >-
-      /usr/local/bin/k3s kubectl -n {{ external_secrets_bootstrap_namespace }} get deployment {{ external_secrets_bootstrap_deployment_name }}
+    argv:
+      - /usr/local/bin/k3s
+      - kubectl
+      - -n
+      - "{{ external_secrets_bootstrap_namespace }}"
+      - get
+      - deployment
+      - "{{ external_secrets_bootstrap_deployment_name }}"
   register: external_secrets_deployment_result
   retries: 30
   delay: 10
@@ -118,8 +140,15 @@
 
 - name: Wait for 1Password Connect deployment rollout
   ansible.builtin.command:
-    cmd: >-
-      /usr/local/bin/k3s kubectl -n {{ external_secrets_bootstrap_namespace }} rollout status deployment/{{ external_secrets_bootstrap_deployment_name }} --timeout=300s
+    argv:
+      - /usr/local/bin/k3s
+      - kubectl
+      - -n
+      - "{{ external_secrets_bootstrap_namespace }}"
+      - rollout
+      - status
+      - "deployment/{{ external_secrets_bootstrap_deployment_name }}"
+      - --timeout=300s
   register: external_secrets_rollout_result
   retries: 30
   delay: 10

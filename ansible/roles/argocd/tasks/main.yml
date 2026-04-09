@@ -59,11 +59,19 @@
 
 - name: Install Argo CD from the official manifest
   ansible.builtin.command:
-    cmd: >-
-      /usr/local/bin/k3s kubectl apply --server-side --force-conflicts -n {{ argocd_namespace }} -f {{ argocd_remote_manifest_dir }}/install.yaml
+    argv:
+      - /usr/local/bin/k3s
+      - kubectl
+      - apply
+      - --server-side
+      - --force-conflicts
+      - -n
+      - "{{ argocd_namespace }}"
+      - -f
+      - "{{ argocd_remote_manifest_dir }}/install.yaml"
   register: argocd_install_result
-  changed_when: >
-    'created' in argocd_install_result.stdout or 'configured' in argocd_install_result.stdout or 'serverside-applied' in argocd_install_result.stdout
+  changed_when: >-
+    {{ argocd_install_result.stdout is search('created|configured|serverside-applied') }}
   when: argocd_install_required
 
 - name: Wait for Argo CD application controller rollout
@@ -88,13 +96,18 @@
   changed_when: false
 
 - name: Record Argo CD bootstrap version
-  ansible.builtin.shell: >-
-    set -o pipefail && /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} create configmap {{ argocd_bootstrap_state_configmap }} --from-literal=version={{ argocd_version }} --dry-run=client -o yaml | /usr/local/bin/k3s kubectl apply -f -
+  ansible.builtin.shell: |
+    set -o pipefail
+    /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} \
+      create configmap {{ argocd_bootstrap_state_configmap }} \
+      --from-literal=version={{ argocd_version }} \
+      --dry-run=client -o yaml | \
+      /usr/local/bin/k3s kubectl apply -f -
   args:
     executable: /bin/bash
   register: argocd_bootstrap_state_result
-  changed_when: >
-    'created' in argocd_bootstrap_state_result.stdout or 'configured' in argocd_bootstrap_state_result.stdout
+  changed_when: >-
+    {{ argocd_bootstrap_state_result.stdout is search('created|configured') }}
   when: argocd_install_required
 
 - name: Read current Argo CD insecure server setting
@@ -180,8 +193,16 @@
 
 - name: Read current Argo CD admin password checksum
   ansible.builtin.command:
-    cmd: >-
-      /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} get secret argocd-secret -o jsonpath={.metadata.annotations.homelab\\.io/admin-password-checksum}
+    argv:
+      - /usr/local/bin/k3s
+      - kubectl
+      - -n
+      - "{{ argocd_namespace }}"
+      - get
+      - secret
+      - argocd-secret
+      - -o
+      - "jsonpath={.metadata.annotations.homelab\\.io/admin-password-checksum}"
   register: argocd_admin_checksum_result
   failed_when: false
   changed_when: false
@@ -277,8 +298,16 @@
 
 - name: Read current Argo CD repository credential checksum
   ansible.builtin.command:
-    cmd: >-
-      /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} get secret {{ argocd_repo_secret_name }} -o jsonpath={.metadata.annotations.homelab\\.io/repo-secret-checksum}
+    argv:
+      - /usr/local/bin/k3s
+      - kubectl
+      - -n
+      - "{{ argocd_namespace }}"
+      - get
+      - secret
+      - "{{ argocd_repo_secret_name }}"
+      - -o
+      - "jsonpath={.metadata.annotations.homelab\\.io/repo-secret-checksum}"
   register: argocd_repo_secret_checksum_result
   failed_when: false
   changed_when: false
@@ -287,8 +316,16 @@
 
 - name: Read current Argo CD repository secret type label
   ansible.builtin.command:
-    cmd: >-
-      /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} get secret {{ argocd_repo_secret_name }} -o jsonpath={.metadata.labels.argocd\\.argoproj\\.io/secret-type}
+    argv:
+      - /usr/local/bin/k3s
+      - kubectl
+      - -n
+      - "{{ argocd_namespace }}"
+      - get
+      - secret
+      - "{{ argocd_repo_secret_name }}"
+      - -o
+      - "jsonpath={.metadata.labels.argocd\\.argoproj\\.io/secret-type}"
   register: argocd_repo_secret_type_result
   failed_when: false
   changed_when: false
