@@ -1,0 +1,406 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: CI
+
+"on":
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ENV: home
+
+jobs:
+  # -------------------------------------------------------------------
+  # Shared setup: populate caches and generate derived config artifacts
+  # that downstream jobs need.
+  # -------------------------------------------------------------------
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+
+      - name: Load shared tool versions
+        run: |
+          cat ./tool-versions.env >> "$GITHUB_ENV"
+          . ./tool-versions.env
+          printf 'VENV_CACHE_KEY=venv-Linux-py%s\n' "$PYTHON_VERSION" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache Python virtualenv
+        id: cache-venv
+        # v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        with:
+          path: .venv
+          key: ${{ env.VENV_CACHE_KEY }}-${{ hashFiles('requirements/bootstrap.txt') }}
+
+      - name: Create virtualenv and install dependencies
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements/bootstrap.txt
+
+      - name: Cache Ansible collections
+        id: cache-collections
+        # v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        with:
+          path: .ansible/collections
+          key: ${{ env.COLLECTIONS_CACHE_KEY }}-${{ hashFiles('ansible/requirements.yml') }}
+
+      - name: Install Ansible collections
+        if: steps.cache-collections.outputs.cache-hit != 'true'
+        run: |
+          ANSIBLE_HOME=.ansible .venv/bin/ansible-galaxy collection install -r ansible/requirements.yml
+
+      - name: Generate derived config artifacts
+        run: make ENV=${{ env.ENV }} generate-config
+
+      - name: Upload generated config
+        # v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: generated-config
+          path: |
+            ansible/inventories/
+            terraform/envs/home/generated.auto.tfvars.json
+          retention-days: 7
+
+  # -------------------------------------------------------------------
+  # Environment config validation
+  # -------------------------------------------------------------------
+  env-validate:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+      - name: Load shared tool versions
+        run: |
+          cat ./tool-versions.env >> "$GITHUB_ENV"
+          . ./tool-versions.env
+          printf 'VENV_CACHE_KEY=venv-Linux-py%s\n' "$PYTHON_VERSION" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      # v5
+      - uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        with:
+          path: .venv
+          key: ${{ env.VENV_CACHE_KEY }}-${{ hashFiles('requirements/bootstrap.txt') }}
+      - run: make ENV=${{ env.ENV }} env-validate
+
+  test:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+      - name: Load shared tool versions
+        run: |
+          cat ./tool-versions.env >> "$GITHUB_ENV"
+          . ./tool-versions.env
+          printf 'VENV_CACHE_KEY=venv-Linux-py%s\n' "$PYTHON_VERSION" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      # v5
+      - uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        with:
+          path: .venv
+          key: ${{ env.VENV_CACHE_KEY }}-${{ hashFiles('requirements/bootstrap.txt') }}
+      - run: make test
+
+  # -------------------------------------------------------------------
+  # Terraform checks: format, validate, lint
+  # -------------------------------------------------------------------
+  terraform:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+
+      - name: Load shared tool versions
+        run: |
+          cat ./tool-versions.env >> "$GITHUB_ENV"
+          . ./tool-versions.env
+          printf 'VENV_CACHE_KEY=venv-Linux-py%s\n' "$PYTHON_VERSION" >> "$GITHUB_ENV"
+
+      - uses: hashicorp/setup-terraform@b0cc02d63867e0daaa034a47e2cdf5d525a863a1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - uses: terraform-linters/setup-tflint@03a4762544c696fe278505fab9ae5d27a6d83fd9
+        with:
+          tflint_version: v${{ env.TFLINT_VERSION }}
+
+      # v8
+
+      - uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317
+        with:
+          name: generated-config
+
+      - name: Terraform runtime artifact guard
+        run: make terraform-runtime-artifacts-check
+
+      - name: Terraform fmt check
+        run: make tf-fmt-check
+
+      - name: Terraform validate
+        run: make ENV=${{ env.ENV }} tf-validate
+
+      - name: TFLint
+        run: make ENV=${{ env.ENV }} tf-lint
+
+  # -------------------------------------------------------------------
+  # Ansible checks: syntax-check, ansible-lint
+  # -------------------------------------------------------------------
+  ansible:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+      - name: Load shared tool versions
+        run: |
+          cat ./tool-versions.env >> "$GITHUB_ENV"
+          . ./tool-versions.env
+          printf 'VENV_CACHE_KEY=venv-Linux-py%s\n' "$PYTHON_VERSION" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      # v5
+      - uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        with:
+          path: .venv
+          key: ${{ env.VENV_CACHE_KEY }}-${{ hashFiles('requirements/bootstrap.txt') }}
+      # v5
+      - uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        with:
+          path: .ansible/collections
+          key: ${{ env.COLLECTIONS_CACHE_KEY }}-${{ hashFiles('ansible/requirements.yml') }}
+      # v8
+      - uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317
+        with:
+          name: generated-config
+
+      - name: Ansible syntax check
+        run: make ENV=${{ env.ENV }} ansible-syntax
+
+      - name: Ansible lint
+        run: make ansible-lint
+
+  # -------------------------------------------------------------------
+  # YAML lint
+  # -------------------------------------------------------------------
+  yaml-lint:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+      - name: Load shared tool versions
+        run: |
+          cat ./tool-versions.env >> "$GITHUB_ENV"
+          . ./tool-versions.env
+          printf 'VENV_CACHE_KEY=venv-Linux-py%s\n' "$PYTHON_VERSION" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      # v5
+      - uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        with:
+          path: .venv
+          key: ${{ env.VENV_CACHE_KEY }}-${{ hashFiles('requirements/bootstrap.txt') }}
+      - run: make yaml-lint
+
+  # -------------------------------------------------------------------
+  # Formatting and workflow lint
+  # -------------------------------------------------------------------
+  formatting:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+      - name: Load shared tool versions
+        run: |
+          cat ./tool-versions.env >> "$GITHUB_ENV"
+          . ./tool-versions.env
+          printf 'VENV_CACHE_KEY=venv-Linux-py%s\n' "$PYTHON_VERSION" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      # v5
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      # v5
+      - uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        id: cache-venv
+        with:
+          path: .venv
+          key: ${{ env.VENV_CACHE_KEY }}-${{ hashFiles('requirements/bootstrap.txt') }}
+      - name: Create virtualenv and install dependencies
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements/bootstrap.txt
+      - run: npm ci
+      - run: make format-check
+
+  generated-file-edits:
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+        with:
+          fetch-depth: 0
+
+      - name: Reject manual edits to generated artifacts
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+          else
+            base_sha="${{ github.event.before }}"
+          fi
+          ./scripts/check-generated-file-edits --base "$base_sha" --head "${{ github.sha }}"
+
+  github-actions-lint:
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+      # v1
+      - uses: reviewdog/action-actionlint@5eaffa19a1991ecc52b11eddcdd57760d1ac7e3d
+        with:
+          fail_level: error
+
+  # -------------------------------------------------------------------
+  # Shell lint
+  # -------------------------------------------------------------------
+  shell-lint:
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+      - name: ShellCheck
+        run: make shell-lint
+
+  # -------------------------------------------------------------------
+  # Checkov IaC security scanning
+  # -------------------------------------------------------------------
+  checkov:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+      - name: Load shared tool versions
+        run: |
+          cat ./tool-versions.env >> "$GITHUB_ENV"
+          . ./tool-versions.env
+          printf 'VENV_CACHE_KEY=venv-Linux-py%s\n' "$PYTHON_VERSION" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      # v5
+      - uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        with:
+          path: .venv
+          key: ${{ env.VENV_CACHE_KEY }}-${{ hashFiles('requirements/bootstrap.txt') }}
+      # v8
+      - uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317
+        with:
+          name: generated-config
+
+      - name: Checkov
+        run: make ENV=${{ env.ENV }} checkov-validate
+
+  # -------------------------------------------------------------------
+  # Gitleaks working-tree secret scanning
+  # -------------------------------------------------------------------
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+
+      - name: Load shared tool versions
+        run: cat ./tool-versions.env >> "$GITHUB_ENV"
+
+      - name: Install gitleaks
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          ./scripts/download-github-release-asset \
+            gitleaks/gitleaks \
+            "${{ env.GITLEAKS_VERSION }}" \
+            "gitleaks_${{ env.GITLEAKS_VERSION }}_linux_x64.tar.gz" \
+            "gitleaks_${{ env.GITLEAKS_VERSION }}_checksums.txt" \
+            "$RUNNER_TEMP/gitleaks.tar.gz"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Gitleaks — tracked working-tree scan
+        run: GITLEAKS_BIN=gitleaks make gitleaks-validate
+
+  # -------------------------------------------------------------------
+  # Kubernetes manifest & secret catalog validation
+  # -------------------------------------------------------------------
+  kubernetes-validate:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+      - name: Load shared tool versions
+        run: |
+          cat ./tool-versions.env >> "$GITHUB_ENV"
+          . ./tool-versions.env
+          printf 'VENV_CACHE_KEY=venv-Linux-py%s\n' "$PYTHON_VERSION" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      # v5
+      - uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        with:
+          path: .venv
+          key: ${{ env.VENV_CACHE_KEY }}-${{ hashFiles('requirements/bootstrap.txt') }}
+
+      - name: Kubernetes validation
+        run: make ENV=${{ env.ENV }} kubernetes-validate
+
+      - name: Install kubeconform
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          ./scripts/download-github-release-asset \
+            yannh/kubeconform \
+            "${{ env.KUBECONFORM_VERSION }}" \
+            "kubeconform-linux-amd64.tar.gz" \
+            CHECKSUMS \
+            "$RUNNER_TEMP/kubeconform.tar.gz"
+          tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" -C "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: kubeconform — validate Kubernetes manifests
+        run: PATH="$RUNNER_TEMP/bin:$PATH" make ENV=${{ env.ENV }} kubeconform-validate
+
+      - name: Secret catalog validation
+        run: make ENV=${{ env.ENV }} secret-catalog-validate

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the {{ management_interface }} hang watchdog every {{ management_interface_tuning.watchdog_interval_seconds | default(30) }} seconds
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec={{ management_interface_tuning.watchdog_interval_seconds | default(30) }}s
+Unit=management-nic-watchdog.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+import yaml
+
+
+def build_gateways(config):
+    defaults = config.get("gateways", {}).get("defaults", {})
+    instances = config.get("gateways", {}).get("instances", {})
+
+    return {
+        f"vm-{bot_slug}-gw": {
+            "vm_id": gateway["vm_id"],
+            "bot_slug": bot_slug,
+            "management_address": gateway["management_address"],
+            "mac_address": gateway["mac_address"],
+            "cpu_cores": gateway.get("cpu_cores", defaults["cpu_cores"]),
+            "memory_mb": gateway.get("memory_mb", defaults["memory_mb"]),
+            "disk_gb": gateway.get("disk_gb", defaults["disk_gb"]),
+            "start_on_boot": gateway.get("start_on_boot", defaults["start_on_boot"]),
+            "install_tailscale": gateway.get("install_tailscale", defaults["install_tailscale"]),
+            "inventory_groups": gateway.get("inventory_groups", defaults["inventory_groups"]),
+            "caddy": gateway.get("caddy", {"enabled": False}),
+        }
+        for bot_slug, gateway in instances.items()
+    }
+
+def build_terraform_vars(config):
+    ansible = config["ansible"]
+    cluster = config["cluster"]
+    gateways = build_gateways(config)
+    platform = config["platform"]
+    terraform = config["terraform"]
+    network = config["network"]
+    hosts = config["hosts"]
+    return {
+        "proxmox_endpoint": terraform["endpoint"],
+        "proxmox_insecure": terraform["insecure"],
+        "proxmox_node_name": terraform["node_name"],
+        "proxmox_pool_id": terraform["pool_id"],
+        "proxmox_vm_disk_storage": terraform["vm_disk_storage"],
+        "proxmox_iso_storage": terraform["iso_storage"],
+        "proxmox_snippet_storage": terraform["snippet_storage"],
+        "proxmox_template_storage": terraform["template_storage"],
+        "proxmox_bridge_name": network["management_bridge"],
+        "proxmox_management_cidr": network["management_cidr"],
+        "proxmox_management_gateway": network["management_gateway"],
+        "proxmox_management_domain": platform["management_domain"],
+        "proxmox_management_dns_servers": network["management_dns_servers"],
+        "proxmox_hosts": {
+            host_name: {
+                "node_name": host["node_name"],
+                "management_address": host["management_address"],
+                "management_cidr": host["management_cidr"],
+                "tailscale_hostname": host["tailscale_hostname"],
+                "management_interface": host["management_interface"],
+                "inventory_groups": host["inventory_groups"],
+            }
+            for host_name, host in hosts.items()
+        },
+        "cluster_operator_user": ansible["operator_user"],
+        "cluster_template": cluster["template"],
+        "cluster_nodes": cluster["nodes"],
+        "home_assistant": config["home_assistant"],
+        "openclaw_gateways": gateways,
+        "containers": {
+            ct_name: {
+                "ct_id": ct["ct_id"],
+                "role": ct["role"],
+                "management_address": ct["management_address"],
+                "management_cidr": ct["management_cidr"],
+                "template_url": ct["template"]["url"],
+                "template_file_name": ct["template"]["file_name"],
+                "cpu_cores": ct["cpu_cores"],
+                "memory_mb": ct["memory_mb"],
+                "swap_mb": ct["swap_mb"],
+                "disk_gb": ct["disk_gb"],
+                "unprivileged": ct["unprivileged"],
+                "nesting": ct["features"]["nesting"],
+                "start_on_boot": ct["start_on_boot"],
+            }
+            for ct_name, ct in config.get("containers", {}).items()
+        },
+    }
+
+
+def build_inventory(config):
+    ansible = config["ansible"]
+    backup = config["backup"]
+    cluster = config["cluster"]
+    gateways = build_gateways(config)
+    platform = config["platform"]
+    ops = config["ops"]["watchtower"]
+    network = config["network"]
+    storage = config["storage"]
+    hosts = config["hosts"]
+    cluster_nodes = cluster["nodes"]
+    containers = config.get("containers", {})
+    group_names = sorted({
+        group
+        for host in hosts.values()
+        for group in host.get("inventory_groups", [])
+    } | {
+        group
+        for node in cluster_nodes.values()
+        for group in node.get("inventory_groups", [])
+    } | {
+        group
+        for gateway in gateways.values()
+        for group in gateway.get("inventory_groups", [])
+    } | {
+        group
+        for ct in containers.values()
+        for group in ct.get("inventory_groups", [])
+    })
+    children = {}
+    for group_name in group_names:
+        children[group_name] = {
+            "hosts": {
+                host_name: {
+                    "ansible_host": host["management_address"],
+                    "ansible_user": host["bootstrap_user"],
+                    "ansible_ssh_private_key_file": "{{ bootstrap_ssh_private_key_file }}",
+                    "node_name": host["node_name"],
+                    "tailscale_hostname": host["tailscale_hostname"],
+                    "management_interface": host["management_interface"],
+                    "management_cidr": host["management_cidr"],
+                    "management_interface_tuning": host.get("management_interface_tuning", {}),
+                }
+                for host_name, host in hosts.items()
+                if group_name in host.get("inventory_groups", [])
+            } | {
+                node_name: {
+                    "ansible_host": node["management_address"],
+                    "ansible_user": ansible["operator_user"],
+                    "ansible_ssh_private_key_file": "{{ cluster_operator_ssh_private_key_file }}",
+                    "management_cidr": node["management_cidr"],
+                    "k3s_node_role": node["role"],
+                }
+                for node_name, node in cluster_nodes.items()
+                if group_name in node.get("inventory_groups", [])
+            } | {
+                gateway_name: {
+                    "ansible_host": gateway["management_address"],
+                    "ansible_user": ansible["operator_user"],
+                    "ansible_ssh_private_key_file": "{{ cluster_operator_ssh_private_key_file }}",
+                    "install_tailscale": gateway["install_tailscale"],
+                    "tailscale_hostname": gateway_name,
+                    "gateway_bot_slug": gateway["bot_slug"],
+                    "gateway_mac_address": gateway["mac_address"],
+                    "gateway_caddy": gateway["caddy"],
+                }
+                for gateway_name, gateway in gateways.items()
+                if group_name in gateway.get("inventory_groups", [])
+            } | {
+                ct_name: {
+                    "ansible_host": ct["management_address"],
+                    "ansible_user": "root",
+                    "ansible_ssh_private_key_file": "{{ cluster_operator_ssh_private_key_file }}",
+                    "container_ct_id": ct["ct_id"],
+                    "install_tailscale": True,
+                    "tailscale_hostname": ct["tailscale_hostname"],
+                    "tailscale_advertise_exit_node": ct["tailscale"]["advertise_exit_node"],
+                    "tailscale_advertise_routes": ct["tailscale"]["advertise_routes"],
+                    "tailscale_accept_routes": ct["tailscale"]["accept_routes"],
+                    "tailscale_accept_dns": ct["tailscale"]["accept_dns"],
+                    "tailscale_ssh": ct["tailscale"]["ssh"],
+                }
+                for ct_name, ct in containers.items()
+                if group_name in ct.get("inventory_groups", [])
+            },
+        }
+
+    k3s_server_hosts = [
+        node_name
+        for node_name, node in cluster_nodes.items()
+        if node["role"] == "server"
+    ]
+    k3s_agent_hosts = [
+        node_name
+        for node_name, node in cluster_nodes.items()
+        if node["role"] == "agent"
+    ]
+
+    return {
+        "all": {
+            "children": children,
+            "vars": {
+                "ansible_python_interpreter": "/usr/bin/python3",
+                "bootstrap_ssh_private_key_file": "",
+                "cluster_operator_ssh_private_key_file": "",
+                "bootstrap_group": ansible["bootstrap_group"],
+                "k3s_server_group": ansible["k3s_server_group"],
+                "k3s_agent_group": ansible["k3s_agent_group"],
+                "operator_user": ansible["operator_user"],
+                "timezone": ansible["timezone"],
+                "locale": ansible["locale"],
+                "manage_no_subscription_repo": ansible["manage_no_subscription_repo"],
+                "enable_enterprise_repo": ansible["enable_enterprise_repo"],
+                "install_tailscale": ansible["install_tailscale"],
+                "tailscale_ssh": ansible["tailscale_ssh"],
+                "tailscale_accept_routes": ansible["tailscale_accept_routes"],
+                "tailscale_accept_dns": ansible["tailscale_accept_dns"],
+                "tailscale_advertise_exit_node": ansible["tailscale_advertise_exit_node"],
+                "tailscale_advertise_routes": ansible["tailscale_advertise_routes"],
+                "configure_iommu": ansible["configure_iommu"],
+                "remove_os_prober": ansible["remove_os_prober"],
+                "datacenter_firewall_enabled": ansible["datacenter_firewall_enabled"],
+                "datacenter_firewall_input_policy": ansible["datacenter_firewall_input_policy"],
+                "datacenter_firewall_output_policy": ansible["datacenter_firewall_output_policy"],
+                "node_firewall_enabled": ansible["node_firewall_enabled"],
+                "argocd_repo_url": ansible["argocd_repo_url"],
+                "argocd_repo_secret_name": ansible["argocd_repo_secret_name"],
+                "k3s_version": ansible["k3s_version"],
+                "k3s_channel": ansible["k3s_channel"],
+                "k3s_cluster_init": ansible["k3s_cluster_init"],
+                "k3s_cluster_cidr": ansible["k3s_cluster_cidr"],
+                "k3s_service_cidr": ansible["k3s_service_cidr"],
+                "k3s_cluster_dns": ansible["k3s_cluster_dns"],
+                "k3s_write_kubeconfig_mode": ansible["k3s_write_kubeconfig_mode"],
+                "k3s_server_address": cluster_nodes[k3s_server_hosts[0]]["management_address"],
+                "k3s_server_name": k3s_server_hosts[0],
+                "k3s_agent_hosts": k3s_agent_hosts,
+                "k3s_kubeconfig_local_dir": "{{ playbook_dir }}/../artifacts/kubeconfig",
+                "k3s_kubeconfig_server": "https://{{ hostvars[k3s_server_name].ansible_host }}:6443",
+                "management_bridge": network["management_bridge"],
+                "management_network_cidr": network["management_cidr"],
+                "management_gateway": network["management_gateway"],
+                "management_dns_servers": network["management_dns_servers"],
+                "root_install_target": storage["root"]["install_target"],
+                "root_local_storage_id": storage["root"]["local_storage_id"],
+                "root_local_lvm_storage_id": storage["root"]["local_lvm_storage_id"],
+                "vmdata_device": storage["vmdata"]["device"],
+                "vmdata_filesystem_type": storage["vmdata"]["filesystem_type"],
+                "vmdata_pool_name": storage["vmdata"]["pool_name"],
+                "vmdata_storage_id": storage["vmdata"]["storage_id"],
+                "vmdata_content_types": storage["vmdata"]["content_types"],
+                "vmdata_compression": storage["vmdata"]["compression"],
+                "vmdata_autotrim": storage["vmdata"]["autotrim"],
+                "vmdata_scrub_schedule": storage["vmdata"]["scrub_schedule"],
+                "vmdata_wipe_signatures": storage["vmdata"]["wipe_signatures"],
+                "watchtower_monitoring_enabled": ops["enabled"],
+                "watchtower_tailscale_target": ops["tailscale_target"],
+                "watchtower_prometheus_job_name": ops["prometheus_job_name"],
+                "watchtower_node_exporter_port": ops["node_exporter_port"],
+                "watchtower_gatus_endpoints": ops["gatus_endpoints"],
+                "backup_target_enabled": backup["target"]["enabled"],
+                "backup_storage_id": backup["target"]["storage_id"],
+                "backup_server": backup["target"]["server"],
+                "backup_port": backup["target"]["port"],
+                "backup_datastore": backup["target"]["datastore"],
+                "backup_namespace": backup["target"]["namespace"],
+                "backup_content_types": backup["target"]["content_types"],
+                "backup_storage_shared": backup["target"]["shared"],
+                "backup_retention_owner": backup["target"]["retention_owner"],
+                "backup_job_id": backup["job"]["id"],
+                "backup_job_enabled": backup["job"]["enabled"],
+                "backup_job_all": backup["job"]["all"],
+                "backup_job_schedule": backup["job"]["schedule"],
+                "backup_job_mode": backup["job"]["mode"],
+                "backup_job_pbs_change_detection_mode": backup["job"]["pbs_change_detection_mode"],
+                "backup_job_notification_mode": backup["job"]["notification_mode"],
+                "backup_job_notes_template": backup["job"]["notes_template"],
+                "backup_job_comment": backup["job"]["comment"],
+                "backup_job_exclude": backup["job"]["exclude"],
+                "backup_job_remove": backup["job"]["remove"],
+                "platform_cluster_name": platform["cluster_name"],
+                "platform_onepassword_vault": platform["onepassword_vault"],
+                "platform_management_domain": platform["management_domain"],
+                "platform_cluster_issuer_name": platform["cluster_issuer_name"],
+                "platform_argocd_hostname": platform["argocd_hostname"],
+                "platform_homepage_hostname": platform["homepage_hostname"],
+                "platform_home_assistant_hostname": platform["home_assistant_hostname"],
+                "platform_rancher_hostname": platform["rancher_hostname"],
+                "platform_longhorn_hostname": platform["longhorn_hostname"],
+                "platform_netbox_hostname": platform["netbox_hostname"],
+                "platform_n8n_hostname": platform["n8n_hostname"],
+                "platform_gatus_hostname": platform["gatus_hostname"],
+                "platform_prometheus_remote_write_url": platform["telemetry"]["prometheus_remote_write_url"],
+                "platform_loki_push_url": platform["telemetry"]["loki_push_url"],
+                "platform_metallb_addresses": cluster["ingress"]["metallb_addresses"],
+            },
+        }
+    }
+
+
+def main():
+    repo_root = Path(__file__).resolve().parent.parent
+    env_name = sys.argv[1] if len(sys.argv) > 1 else "home"
+    config_path = repo_root / "config" / f"{env_name}.yaml"
+
+    if not config_path.is_file():
+        raise SystemExit(f"Missing environment config: {config_path}")
+
+    subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "validate-environment"), env_name],
+        check=True,
+    )
+
+    config = yaml.safe_load(config_path.read_text())
+
+    terraform_path = (
+        repo_root / "terraform" / "envs" / env_name / "generated.auto.tfvars.json"
+    )
+    inventory_path = repo_root / "ansible" / "inventories" / env_name / "generated.yml"
+    terraform_path.parent.mkdir(parents=True, exist_ok=True)
+    inventory_path.parent.mkdir(parents=True, exist_ok=True)
+
+    terraform_path.write_text(json.dumps(build_terraform_vars(config), indent=2) + "\n")
+    inventory_path.write_text(yaml.safe_dump(build_inventory(config), sort_keys=False))
+
+    print(f"Generated {terraform_path.relative_to(repo_root)}")
+    print(f"Generated {inventory_path.relative_to(repo_root)}")
+
+
+if __name__ == "__main__":
+    main()

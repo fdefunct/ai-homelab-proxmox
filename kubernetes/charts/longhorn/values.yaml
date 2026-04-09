@@ -1,0 +1,42 @@
+preUpgradeChecker:
+  jobEnabled: false
+
+persistence:
+  defaultClass: true
+  defaultClassReplicaCount: 2
+  reclaimPolicy: Delete
+
+defaultSettings:
+  defaultDataPath: /var/lib/longhorn/
+  defaultReplicaCount: 2
+  replicaAutoBalance: disabled
+  allowVolumeCreationWithDegradedAvailability: true
+
+longhornUI:
+  replicas: 1
+
+longhornAdmissionWebhook:
+  replicas: 1
+
+longhornConversionWebhook:
+  replicas: 1
+
+longhornRecoveryBackend:
+  replicas: 1
+
+csi:
+  attacherReplicaCount: 1
+  provisionerReplicaCount: 1
+  resizerReplicaCount: 1
+  snapshotterReplicaCount: 1
+
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  host: longhorn.core.example.com
+  tls: true
+  tlsSecret: longhorn-tls
+  path: /
+  pathType: Prefix
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-cloudflare

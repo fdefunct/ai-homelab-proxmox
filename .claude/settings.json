@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(op:*)",
+      "Bash(ssh:*)",
+      "Bash(ssh-add:*)",
+      "Bash(ssh-keygen:*)",
+      "Bash(tailscale:*)"
+    ]
+  }
+}

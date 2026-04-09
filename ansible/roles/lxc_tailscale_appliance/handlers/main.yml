@@ -1,0 +1,4 @@
+- name: Reboot LXC container
+  delegate_to: pve-0
+  ansible.builtin.shell: "pct stop {{ container_ct_id }} 2>/dev/null || true; sleep 2; pct start {{ container_ct_id }}"
+  changed_when: true

@@ -1,0 +1,12 @@
+skip-check:
+  # False positive: flags base64-encoded template placeholders and ConfigMap data as secrets
+  - CKV_SECRET_6
+
+  # Image digest pinning is incompatible with our Helm version-pinned GitOps pattern
+  - CKV_K8S_43
+
+  # imagePullPolicy: Always is unnecessary when chart versions are pinned
+  - CKV_K8S_15
+
+  # NetworkPolicies are not deployed in this homelab cluster
+  - CKV2_K8S_6

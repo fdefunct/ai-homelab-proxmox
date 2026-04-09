@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+INTERFACE="{{ management_interface }}"
+PCI_ADDRESS="$(readlink -f "/sys/class/net/$INTERFACE/device" | xargs basename)"
+OUTPUT_DIR="/var/log/homelab-management-nic"
+TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+OUTPUT_FILE="$OUTPUT_DIR/${INTERFACE}-${TIMESTAMP}.log"
+LATEST_LINK="$OUTPUT_DIR/latest.log"
+LABEL="${1:-manual}"
+
+mkdir -p "$OUTPUT_DIR"
+
+{
+  echo "label: $LABEL"
+  echo "captured_at: $(date --iso-8601=seconds)"
+  echo "interface: $INTERFACE"
+  echo "pci_address: $PCI_ADDRESS"
+  echo
+  echo "== ip link show =="
+  ip link show "$INTERFACE"
+  echo
+  echo "== ethtool =="
+  /usr/sbin/ethtool "$INTERFACE" || true
+  echo
+  echo "== ethtool --show-eee =="
+  /usr/sbin/ethtool --show-eee "$INTERFACE" || true
+  echo
+  echo "== ethtool -S =="
+  /usr/sbin/ethtool -S "$INTERFACE" || true
+  echo
+  echo "== lspci -nnk =="
+  lspci -nnk -s "$PCI_ADDRESS" || true
+  echo
+  echo "== journalctl -k -b =="
+  journalctl -k -b | grep -A30 -B30 -E "e1000e|$INTERFACE|vmbr0" || true
+} > "$OUTPUT_FILE"
+
+ln -sfn "$OUTPUT_FILE" "$LATEST_LINK"
+printf '%s\n' "$OUTPUT_FILE"

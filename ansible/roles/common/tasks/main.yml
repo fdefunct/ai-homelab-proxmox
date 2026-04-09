@@ -1,0 +1,142 @@
+- name: Refresh apt metadata
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  changed_when: false
+
+- name: Apply package upgrades
+  ansible.builtin.apt:
+    upgrade: dist
+
+- name: Install base operator packages
+  ansible.builtin.apt:
+    name:
+      - acl
+      - curl
+      - ethtool
+      - git
+      - jq
+      - locales
+      - lvm2
+      - nvme-cli
+      - qemu-guest-agent
+      - smartmontools
+      - sudo
+      - tmux
+      - vim
+    state: present
+
+- name: Read the current timezone
+  ansible.builtin.command:
+    argv:
+      - timedatectl
+      - show
+      - --property=Timezone
+      - --value
+  register: current_timezone
+  changed_when: false
+
+- name: Ensure the system timezone is configured
+  ansible.builtin.command:
+    argv:
+      - timedatectl
+      - set-timezone
+      - "{{ timezone }}"
+  register: set_timezone_result
+  changed_when: current_timezone.stdout | trim != timezone
+  when: current_timezone.stdout | trim != timezone
+
+- name: Enable the preferred locale in locale.gen
+  ansible.builtin.lineinfile:
+    path: /etc/locale.gen
+    regexp: "^#?{{ locale | regex_escape }} UTF-8$$"
+    line: "{{ locale }} UTF-8"
+  notify: Generate Preferred Locale
+
+- name: Persist default locale settings
+  ansible.builtin.copy:
+    dest: /etc/default/locale
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      LANG={{ locale }}
+      LC_ALL={{ locale }}
+
+- name: Assert the operator user exists in the injected admin list
+  ansible.builtin.assert:
+    that:
+      - bootstrap_admin_users | selectattr('username', 'equalto', operator_user) | list | length == 1
+    fail_msg: "bootstrap_admin_users must include the configured operator_user"
+
+- name: Read the OpenClaw gateway bot account for this host
+  ansible.builtin.set_fact:
+    host_openclaw_bot_account: "{{ (host_openclaw_bot_accounts | default({})).get(inventory_hostname) }}"
+
+- name: Merge shared and host-specific admin users
+  ansible.builtin.set_fact:
+    effective_admin_users: >-
+      {{
+        bootstrap_admin_users +
+        ([host_openclaw_bot_account] if host_openclaw_bot_account is mapping else [])
+      }}
+
+- name: Merge global and host-specific passwordless sudo users
+  ansible.builtin.set_fact:
+    effective_passwordless_sudo_users: >-
+      {{
+        (
+          bootstrap_admin_users
+          | map(attribute='username')
+          | list
+        ) +
+        ([host_openclaw_bot_account.username] if host_openclaw_bot_account is mapping else [])
+      }}
+
+- name: Ensure bootstrap admin users exist
+  ansible.builtin.user:
+    name: "{{ item.username }}"
+    groups: sudo
+    append: true
+    shell: /bin/bash
+    create_home: true
+    state: present
+  loop: "{{ effective_admin_users }}"
+
+- name: Ensure admin SSH directories exist
+  ansible.builtin.file:
+    path: "/home/{{ item.username }}/.ssh"
+    state: directory
+    owner: "{{ item.username }}"
+    group: "{{ item.username }}"
+    mode: "0700"
+  loop: "{{ effective_admin_users }}"
+
+- name: Install admin SSH public keys
+  ansible.builtin.lineinfile:
+    path: "/home/{{ item.username }}/.ssh/authorized_keys"
+    line: "{{ item.public_key }}"
+    create: true
+    owner: "{{ item.username }}"
+    group: "{{ item.username }}"
+    mode: "0600"
+    state: present
+  loop: "{{ effective_admin_users }}"
+
+- name: Allow passwordless sudo for configured users
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/90-{{ item }}
+    owner: root
+    group: root
+    mode: "0440"
+    content: |
+      Defaults:{{ item }} verifypw=any
+      {{ item }} ALL=(ALL) NOPASSWD:ALL
+  loop: "{{ effective_passwordless_sudo_users }}"
+
+- name: Ensure qemu-guest-agent is enabled
+  ansible.builtin.service:
+    name: qemu-guest-agent
+    enabled: true
+    state: started
+  when: ansible_virtualization_role | default('') == 'guest'

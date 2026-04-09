@@ -1,0 +1,74 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  customManagers: [
+    {
+      customType: "regex",
+      managerFilePatterns: [
+        "/^kubernetes\\/apps\\/platform\\/.+\\/application\\.yaml$/",
+      ],
+      matchStrings: [
+        "repoURL:\\s+(?<registryUrl>https?:\\/\\/[^\\s]+)\\s*\\n\\s+chart:\\s+(?<depName>[^\\s]+)\\s*\\n\\s+targetRevision:\\s+(?<currentValue>[^\\s]+)",
+      ],
+      datasourceTemplate: "helm",
+      versioningTemplate: "helm",
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: [
+        "/^\\.github\\/workflows\\/(ci|kubernetes-pr)\\.yml$/",
+      ],
+      matchStrings: ['TERRAFORM_VERSION: "(?<currentValue>[^"]+)"'],
+      depNameTemplate: "hashicorp/terraform",
+      datasourceTemplate: "github-releases",
+      versioningTemplate: "hashicorp",
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: [
+        "/^\\.github\\/workflows\\/(ci|kubernetes-pr)\\.yml$/",
+      ],
+      matchStrings: ['TFLINT_VERSION: "(?<currentValue>[^"]+)"'],
+      depNameTemplate: "terraform-linters/tflint",
+      datasourceTemplate: "github-releases",
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: [
+        "/^\\.github\\/workflows\\/(ci|kubernetes-pr)\\.yml$/",
+      ],
+      matchStrings: ['KUBECONFORM_VERSION: "(?<currentValue>[^"]+)"'],
+      depNameTemplate: "yannh/kubeconform",
+      datasourceTemplate: "github-releases",
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: [
+        "/^\\.github\\/workflows\\/(ci|gitleaks-history)\\.yml$/",
+      ],
+      matchStrings: ['GITLEAKS_VERSION: "(?<currentValue>[^"]+)"'],
+      depNameTemplate: "gitleaks/gitleaks",
+      datasourceTemplate: "github-releases",
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^scripts\\/bootstrap$/"],
+      matchStrings: ['ACTIONLINT_VERSION="(?<currentValue>[^"]+)"'],
+      depNameTemplate: "rhysd/actionlint",
+      datasourceTemplate: "github-releases",
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^scripts\\/bootstrap$/"],
+      matchStrings: ['KUBECONFORM_VERSION="(?<currentValue>[^"]+)"'],
+      depNameTemplate: "yannh/kubeconform",
+      datasourceTemplate: "github-releases",
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^scripts\\/bootstrap$/"],
+      matchStrings: ['GITLEAKS_VERSION="(?<currentValue>[^"]+)"'],
+      depNameTemplate: "gitleaks/gitleaks",
+      datasourceTemplate: "github-releases",
+    },
+  ],
+}

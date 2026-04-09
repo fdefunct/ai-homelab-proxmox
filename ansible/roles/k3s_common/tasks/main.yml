@@ -1,0 +1,75 @@
+- name: Install guest baseline packages
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - cryptsetup
+      - curl
+      - nfs-common
+      - open-iscsi
+    state: present
+
+- name: Ensure iscsid is enabled
+  ansible.builtin.service:
+    name: iscsid
+    enabled: true
+    state: started
+
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+- name: Disable multipathd units that conflict with Longhorn volume devices
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+    masked: true
+  loop:
+    - multipathd.service
+    - multipathd.socket
+  when: item in ansible_facts.services
+
+- name: Disable active swap
+  ansible.builtin.command:
+    argv:
+      - swapoff
+      - -a
+  when: ansible_swaptotal_mb | int > 0
+  changed_when: true
+
+- name: Remove swap entries from fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(?!#)(.+\s+swap\s+.+)$'
+    replace: '# \1'
+
+- name: Ensure overlay module is loaded
+  community.general.modprobe:
+    name: overlay
+    state: present
+
+- name: Ensure br_netfilter module is loaded
+  community.general.modprobe:
+    name: br_netfilter
+    state: present
+
+- name: Persist kernel modules for k3s
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k3s.conf
+    mode: "0644"
+    content: |
+      overlay
+      br_netfilter
+
+- name: Ensure Kubernetes network sysctls are set
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+  loop:
+    - name: net.bridge.bridge-nf-call-iptables
+      value: "1"
+    - name: net.bridge.bridge-nf-call-ip6tables
+      value: "1"
+    - name: net.ipv4.ip_forward
+      value: "1"

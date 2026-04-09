@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://kubernetes-schemas.pages.dev/external-secrets.io/externalsecret_v1.json
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: velero-backblaze-config
+  namespace: velero
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-sdk
+  target:
+    name: velero-backblaze-config
+    creationPolicy: Owner
+    template:
+      engineVersion: v2
+      type: Opaque
+      data:
+        bucket: "{{ .bucket }}"
+        region: "{{ .region }}"
+        s3Url: "https://{{ .endpoint }}"
+  data:
+    - secretKey: bucket
+      remoteRef:
+        key: homelab-core-backblaze-velero-key
+        property: bucket name
+    - secretKey: endpoint
+      remoteRef:
+        key: homelab-core-backblaze-velero-key
+        property: endpoint
+    - secretKey: region
+      remoteRef:
+        key: homelab-core-backblaze-velero-key
+        property: region

@@ -1,0 +1,716 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from ipaddress import ip_address, ip_interface, ip_network
+import json
+from pathlib import Path
+import re
+import sys
+
+import jsonschema
+import yaml
+
+
+HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+FQDN_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
+INTERFACE_PATTERN = re.compile(r"^[a-zA-Z0-9._:-]+$")
+MAC_ADDRESS_PATTERN = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
+GATUS_URL_PREFIXES = ("http://", "https://", "tcp://")
+PLATFORM_GATUS_HOSTNAME_KEYS = {
+    "argocd_hostname",
+    "homepage_hostname",
+    "home_assistant_hostname",
+    "rancher_hostname",
+    "longhorn_hostname",
+    "mealie_hostname",
+    "netbox_hostname",
+    "n8n_hostname",
+    "gatus_hostname",
+}
+
+
+def load_yaml(path: Path):
+    try:
+        return yaml.safe_load(path.read_text())
+    except FileNotFoundError as exc:
+        raise ValueError(f"Missing required file: {path}") from exc
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{path}: YAML parse error: {exc}") from exc
+
+
+def expect(condition: bool, message: str, errors: list[str]):
+    if not condition:
+        errors.append(message)
+
+
+def expect_non_empty_string(value, label: str, errors: list[str]):
+    expect(isinstance(value, str) and value.strip(), f"{label} must be a non-empty string", errors)
+
+
+def validate_hostname(value, label: str, errors: list[str]):
+    expect_non_empty_string(value, label, errors)
+    if isinstance(value, str) and value.strip():
+        expect(HOSTNAME_PATTERN.match(value) is not None, f"{label} must match {HOSTNAME_PATTERN.pattern}", errors)
+
+
+def validate_fqdn(value, label: str, errors: list[str]):
+    expect_non_empty_string(value, label, errors)
+    if isinstance(value, str) and value.strip():
+        expect("." in value, f"{label} must be a fully qualified domain name", errors)
+        expect(FQDN_PATTERN.match(value) is not None, f"{label} must match {FQDN_PATTERN.pattern}", errors)
+
+
+def validate_interface_name(value, label: str, errors: list[str]):
+    expect_non_empty_string(value, label, errors)
+    if isinstance(value, str) and value.strip():
+        expect(INTERFACE_PATTERN.match(value) is not None, f"{label} must be a valid interface-style string", errors)
+
+
+def validate_mac_address(value, label: str, errors: list[str]):
+    expect_non_empty_string(value, label, errors)
+    if isinstance(value, str) and value.strip():
+        expect(MAC_ADDRESS_PATTERN.match(value) is not None, f"{label} must match {MAC_ADDRESS_PATTERN.pattern}", errors)
+
+
+def validate_url(value, label: str, errors: list[str]):
+    expect_non_empty_string(value, label, errors)
+    if isinstance(value, str) and value.strip():
+        expect(value.startswith("https://"), f"{label} must start with https://", errors)
+
+
+def validate_gatus_url(value, label: str, errors: list[str]):
+    expect_non_empty_string(value, label, errors)
+    if isinstance(value, str) and value.strip():
+        expect(value.startswith(GATUS_URL_PREFIXES), f"{label} must start with one of {GATUS_URL_PREFIXES}", errors)
+
+
+def validate_hostname_or_ip(value, label: str, errors: list[str]):
+    expect_non_empty_string(value, label, errors)
+    if not isinstance(value, str) or not value.strip():
+        return
+    try:
+        ip_address(value)
+    except ValueError:
+        validate_fqdn(value, label, errors)
+
+
+def validate_hostname_label_or_ip(value, label: str, errors: list[str]):
+    expect_non_empty_string(value, label, errors)
+    if not isinstance(value, str) or not value.strip():
+        return
+    try:
+        ip_address(value)
+    except ValueError:
+        if "." in value:
+            expect(FQDN_PATTERN.match(value) is not None, f"{label} must match {FQDN_PATTERN.pattern}", errors)
+        else:
+            expect(HOSTNAME_PATTERN.match(value) is not None, f"{label} must match {HOSTNAME_PATTERN.pattern}", errors)
+
+
+def validate_host_port_target(value, label: str, errors: list[str]):
+    expect_non_empty_string(value, label, errors)
+    if not isinstance(value, str) or not value.strip():
+        return
+
+    host, separator, port = value.rpartition(":")
+    expect(separator == ":", f"{label} must be in host:port form", errors)
+    if separator != ":":
+        return
+
+    validate_hostname_label_or_ip(host, f"{label} host", errors)
+    expect(port.isdigit(), f"{label} port must be numeric", errors)
+    if port.isdigit():
+        expect(1 <= int(port) <= 65535, f"{label} port must be between 1 and 65535", errors)
+
+
+def validate_network(config_path: Path, network: dict, errors: list[str]):
+    expect_non_empty_string(network.get("management_bridge"), f"{config_path}: network.management_bridge", errors)
+    validate_interface_name(network.get("management_bridge"), f"{config_path}: network.management_bridge", errors)
+
+    try:
+        management_cidr = ip_network(network.get("management_cidr"))
+    except ValueError:
+        errors.append(f"{config_path}: network.management_cidr must be a valid CIDR")
+        management_cidr = None
+
+    try:
+        management_gateway = ip_address(network.get("management_gateway"))
+    except ValueError:
+        errors.append(f"{config_path}: network.management_gateway must be a valid IP address")
+        management_gateway = None
+
+    if management_cidr is not None and management_gateway is not None:
+        expect(
+            management_gateway in management_cidr,
+            f"{config_path}: network.management_gateway must be inside network.management_cidr",
+            errors,
+        )
+
+    dns_servers = network.get("management_dns_servers")
+    expect(
+        isinstance(dns_servers, list) and dns_servers,
+        f"{config_path}: network.management_dns_servers must be a non-empty list",
+        errors,
+    )
+    if isinstance(dns_servers, list):
+        for index, server in enumerate(dns_servers):
+            try:
+                ip_address(server)
+            except ValueError:
+                errors.append(f"{config_path}: network.management_dns_servers[{index}] must be a valid IP address")
+
+    return management_cidr
+
+
+def validate_platform(config_path: Path, platform: dict, errors: list[str]):
+    monitoring = platform.get("monitoring")
+    if isinstance(monitoring, dict):
+        gatus = monitoring.get("gatus")
+        if isinstance(gatus, dict):
+            validate_gatus_monitoring(config_path, gatus, errors)
+
+
+def validate_named_gatus_specs(specs, label: str, errors: list[str], *, require_hostname_key: bool):
+    expect(isinstance(specs, list) and specs, f"{label} must be a non-empty list", errors)
+    if not isinstance(specs, list):
+        return
+
+    names = []
+    for index, spec in enumerate(specs):
+        item_label = f"{label}[{index}]"
+        expect(isinstance(spec, dict), f"{item_label} must be a YAML object", errors)
+        if not isinstance(spec, dict):
+            continue
+
+        expect_non_empty_string(spec.get("name"), f"{item_label}.name", errors)
+        validate_gatus_url(spec.get("url"), f"{item_label}.url", errors)
+        expect(
+            "insecure" not in spec or isinstance(spec.get("insecure"), bool),
+            f"{item_label}.insecure must be boolean when set",
+            errors,
+        )
+        names.append(spec.get("name"))
+
+        if require_hostname_key:
+            expect_non_empty_string(spec.get("hostname_key"), f"{item_label}.hostname_key", errors)
+            if isinstance(spec.get("hostname_key"), str):
+                expect(
+                    spec["hostname_key"] in PLATFORM_GATUS_HOSTNAME_KEYS,
+                    f"{item_label}.hostname_key must be one of {sorted(PLATFORM_GATUS_HOSTNAME_KEYS)}",
+                    errors,
+                )
+
+    normalized = [name for name in names if isinstance(name, str) and name.strip()]
+    expect(len(set(normalized)) == len(normalized), f"{label} names must be unique", errors)
+
+
+def validate_gatus_monitoring(config_path: Path, gatus: dict, errors: list[str]):
+    validate_named_gatus_specs(
+        gatus.get("operator_apps"),
+        f"{config_path}: platform.monitoring.gatus.operator_apps",
+        errors,
+        require_hostname_key=True,
+    )
+    validate_named_gatus_specs(
+        gatus.get("platform_dependencies"),
+        f"{config_path}: platform.monitoring.gatus.platform_dependencies",
+        errors,
+        require_hostname_key=False,
+    )
+
+
+def validate_ops(config_path: Path, ops: dict, errors: list[str]):
+    watchtower = ops.get("watchtower")
+    if not isinstance(watchtower, dict):
+        return
+
+    validate_named_gatus_specs(
+        watchtower.get("gatus_endpoints"),
+        f"{config_path}: ops.watchtower.gatus_endpoints",
+        errors,
+        require_hostname_key=False,
+    )
+
+
+def validate_backup(config_path: Path, backup: dict, errors: list[str]):
+    if not isinstance(backup, dict):
+        return
+
+    target = backup.get("target")
+    job = backup.get("job")
+    if not isinstance(target, dict) or not isinstance(job, dict):
+        return
+
+    validate_hostname(target.get("storage_id"), f"{config_path}: backup.target.storage_id", errors)
+    validate_hostname_or_ip(target.get("server"), f"{config_path}: backup.target.server", errors)
+    validate_hostname(target.get("datastore"), f"{config_path}: backup.target.datastore", errors)
+    validate_hostname(target.get("namespace"), f"{config_path}: backup.target.namespace", errors)
+    validate_hostname(job.get("id"), f"{config_path}: backup.job.id", errors)
+
+
+def validate_terraform(config_path: Path, terraform: dict, hosts: dict, errors: list[str]):
+    if "bootstrap_insecure" in terraform:
+        errors.append(
+            f"{config_path}: terraform.bootstrap_insecure has been removed; use BOOTSTRAP_PROXMOX_INSECURE=1 only as a temporary runtime override",
+        )
+    if isinstance(terraform.get("node_name"), str):
+        expect(terraform["node_name"] in hosts, f"{config_path}: terraform.node_name must exist under hosts", errors)
+
+
+def validate_ansible(config_path: Path, ansible: dict, group_members: dict[str, list[str]], errors: list[str]):
+    advertise_routes = ansible.get("tailscale_advertise_routes")
+    if isinstance(advertise_routes, list):
+        for index, route in enumerate(advertise_routes):
+            try:
+                ip_network(route)
+            except ValueError:
+                errors.append(f"{config_path}: ansible.tailscale_advertise_routes[{index}] must be a valid CIDR")
+
+    for key in ("bootstrap_group", "k3s_server_group", "k3s_agent_group"):
+        group_name = ansible.get(key)
+        if isinstance(group_name, str) and group_name.strip():
+            expect(group_name in group_members, f"{config_path}: ansible.{key} must exist in the generated inventory groups", errors)
+
+    server_group = ansible.get("k3s_server_group")
+    if isinstance(server_group, str) and server_group in group_members:
+        expect(len(group_members[server_group]) == 1, f"{config_path}: ansible.k3s_server_group must resolve to exactly one host", errors)
+
+
+def validate_storage(config_path: Path, storage: dict, errors: list[str]):
+    _ = config_path, storage, errors
+
+
+def validate_host(config_path: Path, host_name: str, host: dict, management_cidr, errors: list[str]):
+    prefix = f"{config_path}: hosts.{host_name}"
+    if not isinstance(host, dict):
+        return
+
+    validate_hostname(host_name, f"{prefix} key", errors)
+    validate_hostname(host.get("node_name"), f"{prefix}.node_name", errors)
+    expect(host.get("node_name") == host_name, f"{prefix}.node_name must equal the host key", errors)
+
+    try:
+        management_address = ip_address(host.get("management_address"))
+    except ValueError:
+        errors.append(f"{prefix}.management_address must be a valid IP address")
+        management_address = None
+
+    try:
+        management_interface = ip_interface(host.get("management_cidr"))
+    except ValueError:
+        errors.append(f"{prefix}.management_cidr must be a valid interface CIDR")
+        management_interface = None
+
+    if management_address is not None and management_interface is not None:
+        expect(management_interface.ip == management_address, f"{prefix}.management_cidr must contain the same host IP as management_address", errors)
+    if management_interface is not None and management_cidr is not None:
+        expect(management_interface.ip in management_cidr, f"{prefix}.management_address must be inside network.management_cidr", errors)
+
+    management_interface_tuning = host.get("management_interface_tuning")
+    if management_interface_tuning is not None:
+        if isinstance(management_interface_tuning, dict):
+            for key in ("watchdog_interval_seconds", "watchdog_cooldown_seconds", "watchdog_max_resets_per_hour"):
+                if key in management_interface_tuning:
+                    value = management_interface_tuning.get(key)
+                    expect(
+                        isinstance(value, int) and value > 0,
+                        f"{prefix}.management_interface_tuning.{key} must be a positive integer",
+                        errors,
+                    )
+
+
+def validate_cluster(config_path: Path, cluster: dict, management_cidr, ansible: dict, errors: list[str]):
+    if not isinstance(cluster, dict):
+        return {}
+
+    template = cluster.get("template")
+    nodes = cluster.get("nodes")
+    ingress = cluster.get("ingress")
+    if not isinstance(template, dict) or not isinstance(nodes, dict) or not nodes or not isinstance(ingress, dict):
+        return {}
+
+    metallb_addresses = ingress.get("metallb_addresses")
+    if isinstance(metallb_addresses, list):
+        for index, item in enumerate(metallb_addresses):
+            expect_non_empty_string(item, f"{config_path}: cluster.ingress.metallb_addresses[{index}]", errors)
+            if not isinstance(item, str) or "-" not in item:
+                continue
+            start_raw, end_raw = item.split("-", 1)
+            try:
+                start_ip = ip_address(start_raw)
+                end_ip = ip_address(end_raw)
+            except ValueError:
+                errors.append(f"{config_path}: cluster.ingress.metallb_addresses[{index}] must be an IP range")
+                continue
+            if management_cidr is not None:
+                expect(start_ip in management_cidr and end_ip in management_cidr, f"{config_path}: cluster.ingress.metallb_addresses[{index}] must stay inside network.management_cidr", errors)
+
+    group_members: dict[str, list[str]] = {}
+    vm_ids = {template["vm_id"]} if isinstance(template.get("vm_id"), int) else set()
+    management_addresses: dict[str, str] = {}
+    server_count = 0
+    for node_name, node in nodes.items():
+        prefix = f"{config_path}: cluster.nodes.{node_name}"
+        if not isinstance(node, dict):
+            continue
+
+        validate_hostname(node_name, f"{prefix} key", errors)
+        if isinstance(node.get("vm_id"), int):
+            expect(node["vm_id"] not in vm_ids, f"{prefix}.vm_id must be unique", errors)
+            vm_ids.add(node["vm_id"])
+
+        role = node.get("role")
+        if role == "server":
+            server_count += 1
+
+        try:
+            management_address = ip_address(node.get("management_address"))
+        except ValueError:
+            errors.append(f"{prefix}.management_address must be a valid IP address")
+            management_address = None
+
+        try:
+            management_interface = ip_interface(node.get("management_cidr"))
+        except ValueError:
+            errors.append(f"{prefix}.management_cidr must be a valid interface CIDR")
+            management_interface = None
+
+        if management_address is not None and management_interface is not None:
+            expect(management_interface.ip == management_address, f"{prefix}.management_cidr must contain the same host IP as management_address", errors)
+        if management_interface is not None and management_cidr is not None:
+            expect(management_interface.ip in management_cidr, f"{prefix}.management_address must be inside network.management_cidr", errors)
+
+        if isinstance(node.get("management_address"), str):
+            previous = management_addresses.get(node["management_address"])
+            expect(previous is None, f"{prefix}.management_address duplicates cluster.nodes.{previous}.management_address", errors)
+            management_addresses[node["management_address"]] = node_name
+
+        groups = node.get("inventory_groups")
+        if isinstance(groups, list):
+            for group_name in groups:
+                if not isinstance(group_name, str) or not group_name.strip():
+                    continue
+                group_members.setdefault(group_name, []).append(node_name)
+
+    expect(server_count == 1, f"{config_path}: cluster.nodes must contain exactly one server role", errors)
+
+    server_group = ansible.get("k3s_server_group")
+    agent_group = ansible.get("k3s_agent_group")
+    if isinstance(server_group, str) and server_group in group_members:
+        expect(len(group_members[server_group]) == 1, f"{config_path}: cluster group {server_group} must contain exactly one host", errors)
+    if isinstance(agent_group, str) and agent_group in group_members:
+        expect(len(group_members[agent_group]) >= 1, f"{config_path}: cluster group {agent_group} must contain at least one host", errors)
+
+    return group_members
+
+
+def validate_gateways(config_path: Path, gateways: dict, management_cidr, vm_ids: set[int], management_addresses: dict[str, str], errors: list[str]):
+    group_members: dict[str, list[str]] = {}
+    if not isinstance(gateways, dict):
+        return group_members
+
+    defaults = gateways.get("defaults")
+    instances = gateways.get("instances")
+    if not isinstance(defaults, dict) or not isinstance(instances, dict):
+        return group_members
+
+    default_groups = defaults.get("inventory_groups")
+    if isinstance(default_groups, list):
+        expect("openclaw_gateways" in default_groups, f"{config_path}: gateways.defaults.inventory_groups must include openclaw_gateways", errors)
+
+    mac_addresses: dict[str, str] = {}
+    for bot_slug, gateway in instances.items():
+        prefix = f"{config_path}: gateways.instances.{bot_slug}"
+        if not isinstance(gateway, dict):
+            continue
+
+        validate_hostname(bot_slug, f"{prefix} key", errors)
+
+        if isinstance(gateway.get("vm_id"), int):
+            expect(gateway["vm_id"] not in vm_ids, f"{prefix}.vm_id must be unique across VMs and containers", errors)
+            vm_ids.add(gateway["vm_id"])
+
+        try:
+            management_address = ip_address(gateway.get("management_address"))
+        except ValueError:
+            errors.append(f"{prefix}.management_address must be a valid IP address")
+            management_address = None
+
+        if management_address is not None and management_cidr is not None:
+            expect(management_address in management_cidr, f"{prefix}.management_address must be inside network.management_cidr", errors)
+
+        if isinstance(gateway.get("management_address"), str):
+            previous = management_addresses.get(gateway["management_address"])
+            expect(previous is None, f"{prefix}.management_address duplicates {previous}", errors)
+            management_addresses[gateway["management_address"]] = f"gateways.instances.{bot_slug}"
+
+        validate_mac_address(gateway.get("mac_address"), f"{prefix}.mac_address", errors)
+        if isinstance(gateway.get("mac_address"), str) and gateway["mac_address"].strip():
+            normalized_mac = gateway["mac_address"].lower()
+            previous = mac_addresses.get(normalized_mac)
+            expect(previous is None, f"{prefix}.mac_address duplicates gateways.instances.{previous}.mac_address", errors)
+            mac_addresses[normalized_mac] = bot_slug
+
+        caddy = gateway.get("caddy")
+        if caddy is not None:
+            if isinstance(caddy, dict):
+                enabled = caddy.get("enabled")
+                if enabled is True:
+                    validate_fqdn(caddy.get("hostname"), f"{prefix}.caddy.hostname", errors)
+                    validate_host_port_target(caddy.get("upstream"), f"{prefix}.caddy.upstream", errors)
+                else:
+                    if "hostname" in caddy:
+                        validate_fqdn(caddy.get("hostname"), f"{prefix}.caddy.hostname", errors)
+                    if "upstream" in caddy:
+                        validate_host_port_target(caddy.get("upstream"), f"{prefix}.caddy.upstream", errors)
+
+        groups = gateway.get("inventory_groups", defaults.get("inventory_groups"))
+        if isinstance(groups, list):
+            expect("openclaw_gateways" in groups, f"{prefix}.inventory_groups must include openclaw_gateways", errors)
+            for group_name in groups:
+                if not isinstance(group_name, str) or not group_name.strip():
+                    continue
+                group_members.setdefault(group_name, []).append(f"vm-{bot_slug}-gw")
+
+    return group_members
+
+
+def validate_home_assistant(config_path: Path, home_assistant: dict, management_cidr, vm_ids: set[int], management_addresses: dict[str, str], errors: list[str]):
+    prefix = f"{config_path}: home_assistant"
+    if not isinstance(home_assistant, dict):
+        return
+
+    if isinstance(home_assistant.get("vm_id"), int):
+        expect(home_assistant["vm_id"] not in vm_ids, f"{prefix}.vm_id must be unique across VMs and containers", errors)
+        vm_ids.add(home_assistant["vm_id"])
+
+    try:
+        management_address = ip_address(home_assistant.get("management_address"))
+    except ValueError:
+        errors.append(f"{prefix}.management_address must be a valid IP address")
+        management_address = None
+
+    try:
+        management_interface = ip_interface(home_assistant.get("management_cidr"))
+    except ValueError:
+        errors.append(f"{prefix}.management_cidr must be a valid interface CIDR")
+        management_interface = None
+
+    if management_address is not None and management_interface is not None:
+        expect(management_interface.ip == management_address, f"{prefix}.management_cidr must contain the same host IP as management_address", errors)
+    if management_interface is not None and management_cidr is not None:
+        expect(management_interface.ip in management_cidr, f"{prefix}.management_address must be inside network.management_cidr", errors)
+
+    if isinstance(home_assistant.get("management_address"), str):
+        previous = management_addresses.get(home_assistant["management_address"])
+        expect(previous is None, f"{prefix}.management_address duplicates {previous}", errors)
+        management_addresses[home_assistant["management_address"]] = "home_assistant"
+
+
+def validate_containers(config_path: Path, containers: dict, management_cidr, vm_ids: set[int], management_addresses: dict[str, str], errors: list[str]) -> dict[str, list[str]]:
+    group_members: dict[str, list[str]] = {}
+    if not isinstance(containers, dict):
+        return group_members
+
+    for ct_name, ct in containers.items():
+        prefix = f"{config_path}: containers.{ct_name}"
+        if not isinstance(ct, dict):
+            continue
+
+        validate_hostname(ct_name, f"{prefix} key", errors)
+
+        if isinstance(ct.get("ct_id"), int):
+            expect(ct["ct_id"] not in vm_ids, f"{prefix}.ct_id must be unique across VMs and containers", errors)
+            vm_ids.add(ct["ct_id"])
+
+        try:
+            ct_address = ip_address(ct.get("management_address"))
+        except ValueError:
+            errors.append(f"{prefix}.management_address must be a valid IP address")
+            ct_address = None
+
+        try:
+            ct_interface = ip_interface(ct.get("management_cidr"))
+        except ValueError:
+            errors.append(f"{prefix}.management_cidr must be a valid interface CIDR")
+            ct_interface = None
+
+        if ct_address is not None and ct_interface is not None:
+            expect(ct_interface.ip == ct_address, f"{prefix}.management_cidr must contain the same host IP as management_address", errors)
+        if ct_address is not None and management_cidr is not None:
+            expect(ct_address in management_cidr, f"{prefix}.management_address must be inside network.management_cidr", errors)
+
+        if isinstance(ct.get("management_address"), str):
+            previous = management_addresses.get(ct["management_address"])
+            expect(previous is None, f"{prefix}.management_address duplicates {previous}", errors)
+            management_addresses[ct["management_address"]] = f"containers.{ct_name}"
+
+        ts = ct.get("tailscale")
+        if isinstance(ts, dict):
+            ts_routes = ts.get("advertise_routes")
+            if isinstance(ts_routes, list):
+                for index, route in enumerate(ts_routes):
+                    try:
+                        ip_network(route)
+                    except ValueError:
+                        errors.append(f"{prefix}.tailscale.advertise_routes[{index}] must be a valid CIDR")
+
+        groups = ct.get("inventory_groups")
+        if isinstance(groups, list):
+            for group_name in groups:
+                if not isinstance(group_name, str) or not group_name.strip():
+                    continue
+                group_members.setdefault(group_name, []).append(ct_name)
+
+    return group_members
+
+
+def validate_config(env_name: str, config_path: Path, errors: list[str]):
+    config = load_yaml(config_path)
+    expect(isinstance(config, dict), f"{config_path}: expected top-level YAML object", errors)
+    if not isinstance(config, dict):
+        return
+
+    expect(config.get("environment") == env_name, f"{config_path}: environment must equal {env_name!r}", errors)
+
+    terraform = config.get("terraform")
+    ansible = config.get("ansible")
+    platform = config.get("platform")
+    ops = config.get("ops")
+    backup = config.get("backup")
+    network = config.get("network")
+    storage = config.get("storage")
+    cluster = config.get("cluster")
+    home_assistant = config.get("home_assistant")
+    gateways = config.get("gateways", {})
+    hosts = config.get("hosts")
+    expect(isinstance(terraform, dict), f"{config_path}: terraform must be a YAML object", errors)
+    expect(isinstance(ansible, dict), f"{config_path}: ansible must be a YAML object", errors)
+    expect(isinstance(platform, dict), f"{config_path}: platform must be a YAML object", errors)
+    expect(isinstance(ops, dict), f"{config_path}: ops must be a YAML object", errors)
+    expect(isinstance(backup, dict), f"{config_path}: backup must be a YAML object", errors)
+    expect(isinstance(network, dict), f"{config_path}: network must be a YAML object", errors)
+    expect(isinstance(storage, dict), f"{config_path}: storage must be a YAML object", errors)
+    expect(isinstance(cluster, dict), f"{config_path}: cluster must be a YAML object", errors)
+    expect(isinstance(home_assistant, dict), f"{config_path}: home_assistant must be a YAML object", errors)
+    expect(isinstance(gateways, dict), f"{config_path}: gateways must be a YAML object", errors)
+    expect(isinstance(hosts, dict) and hosts, f"{config_path}: hosts must be a non-empty mapping", errors)
+    if not isinstance(terraform, dict) or not isinstance(ansible, dict) or not isinstance(platform, dict) or not isinstance(ops, dict) or not isinstance(network, dict) or not isinstance(storage, dict) or not isinstance(cluster, dict) or not isinstance(home_assistant, dict) or not isinstance(gateways, dict) or not isinstance(hosts, dict) or not hosts:
+        return
+
+    management_cidr = validate_network(config_path, network, errors)
+    validate_platform(config_path, platform, errors)
+    validate_ops(config_path, ops, errors)
+    validate_backup(config_path, backup, errors)
+    validate_storage(config_path, storage, errors)
+
+    group_members: dict[str, list[str]] = {}
+    management_addresses: dict[str, str] = {}
+    tailscale_hostnames: dict[str, str] = {}
+    for host_name, host in hosts.items():
+        validate_host(config_path, host_name, host, management_cidr, errors)
+        if not isinstance(host, dict):
+            continue
+
+        for field, seen in (("management_address", management_addresses), ("tailscale_hostname", tailscale_hostnames)):
+            value = host.get(field)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            if value in seen:
+                errors.append(f"{config_path}: hosts.{host_name}.{field} duplicates hosts.{seen[value]}.{field}")
+            else:
+                seen[value] = host_name
+
+        for group_name in host.get("inventory_groups", []):
+            if isinstance(group_name, str) and group_name.strip():
+                group_members.setdefault(group_name, []).append(host_name)
+
+    cluster_groups = validate_cluster(config_path, cluster, management_cidr, ansible, errors)
+    for group_name, members in cluster_groups.items():
+        group_members.setdefault(group_name, []).extend(members)
+
+    # Collect VM IDs and management addresses for cross-validation with containers
+    all_vm_ids: set[int] = set()
+    all_mgmt_addresses: dict[str, str] = {}
+    template = cluster.get("template", {})
+    if isinstance(template, dict) and isinstance(template.get("vm_id"), int):
+        all_vm_ids.add(template["vm_id"])
+    nodes = cluster.get("nodes", {})
+    if isinstance(nodes, dict):
+        for node_name, node in nodes.items():
+            if isinstance(node, dict):
+                if isinstance(node.get("vm_id"), int):
+                    all_vm_ids.add(node["vm_id"])
+                if isinstance(node.get("management_address"), str):
+                    all_mgmt_addresses[node["management_address"]] = f"cluster.nodes.{node_name}"
+    for host_name, host in hosts.items():
+        if isinstance(host, dict) and isinstance(host.get("management_address"), str):
+            all_mgmt_addresses[host["management_address"]] = f"hosts.{host_name}"
+
+    validate_home_assistant(config_path, home_assistant, management_cidr, all_vm_ids, all_mgmt_addresses, errors)
+
+    gateway_groups = validate_gateways(config_path, gateways, management_cidr, all_vm_ids, all_mgmt_addresses, errors)
+    for group_name, members in gateway_groups.items():
+        group_members.setdefault(group_name, []).extend(members)
+
+    containers = config.get("containers", {})
+    if containers:
+        container_groups = validate_containers(config_path, containers, management_cidr, all_vm_ids, all_mgmt_addresses, errors)
+        for group_name, members in container_groups.items():
+            group_members.setdefault(group_name, []).extend(members)
+
+        # Safety: if any container advertises routes overlapping management CIDR,
+        # global tailscale_accept_routes must be false to prevent routing loops on Homelab
+        if management_cidr is not None and isinstance(ansible.get("tailscale_accept_routes"), bool) and ansible["tailscale_accept_routes"]:
+            for ct_name, ct in containers.items():
+                if not isinstance(ct, dict):
+                    continue
+                ts = ct.get("tailscale", {})
+                for route in ts.get("advertise_routes", []):
+                    try:
+                        advertised = ip_network(route)
+                        if advertised.overlaps(management_cidr):
+                            errors.append(
+                                f"{config_path}: SAFETY: containers.{ct_name} advertises {route} which overlaps "
+                                f"network.management_cidr ({management_cidr}), but ansible.tailscale_accept_routes "
+                                f"is true. This will create a routing loop on the PVE host. Set "
+                                f"ansible.tailscale_accept_routes to false."
+                            )
+                    except ValueError:
+                        pass
+
+    validate_terraform(config_path, terraform, hosts, errors)
+    validate_ansible(config_path, ansible, group_members, errors)
+
+
+def validate_json_schema(config_path: Path, repo_root: Path, errors: list[str]):
+    schema_path = repo_root / "schemas" / "home.yaml.schema.json"
+    if not schema_path.exists():
+        return
+    try:
+        schema = json.loads(schema_path.read_text())
+        data = yaml.safe_load(config_path.read_text())
+        jsonschema.validate(instance=data, schema=schema)
+    except jsonschema.ValidationError as exc:
+        errors.append(f"{config_path}: schema validation error: {exc.message} (at {' > '.join(str(p) for p in exc.absolute_path)})")
+    except Exception as exc:
+        errors.append(f"schema validation failed: {exc}")
+
+
+def main():
+    repo_root = Path(__file__).resolve().parent.parent
+    env_name = sys.argv[1] if len(sys.argv) > 1 else "home"
+    config_path = repo_root / "config" / f"{env_name}.yaml"
+    errors: list[str] = []
+
+    validate_json_schema(config_path, repo_root, errors)
+    validate_config(env_name, config_path, errors)
+
+    if errors:
+        raise SystemExit("\n".join(errors))
+
+    print(f"{config_path.relative_to(repo_root)} is valid")
+
+
+if __name__ == "__main__":
+    main()

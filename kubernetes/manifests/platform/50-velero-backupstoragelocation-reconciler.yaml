@@ -1,0 +1,132 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: velero-bsl-reconciler
+  namespace: velero
+  annotations:
+    argocd.argoproj.io/sync-wave: "50"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: velero-bsl-reconciler
+  namespace: velero
+  annotations:
+    argocd.argoproj.io/sync-wave: "50"
+rules:
+  - apiGroups:
+      - velero.io
+    resources:
+      - backupstoragelocations
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - patch
+      - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: velero-bsl-reconciler
+  namespace: velero
+  annotations:
+    argocd.argoproj.io/sync-wave: "50"
+subjects:
+  - kind: ServiceAccount
+    name: velero-bsl-reconciler
+    namespace: velero
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: velero-bsl-reconciler
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: velero-bsl-reconciler
+  namespace: velero
+  annotations:
+    argocd.argoproj.io/sync-wave: "50"
+    checkov.io/skip1: "CKV_K8S_38=reconciler requires SA token to run kubectl against the cluster"
+    checkov.io/skip2: "CKV_K8S_8=shell loop container has no HTTP endpoint to probe"
+    checkov.io/skip3: "CKV_K8S_9=shell loop container has no HTTP endpoint to probe"
+    checkov.io/skip4: "CKV_K8S_35=three config values from a single secret; env vars are acceptable here"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: velero-bsl-reconciler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: velero-bsl-reconciler
+    spec:
+      serviceAccountName: velero-bsl-reconciler
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: reconciler
+          image: docker.io/bitnami/kubectl@sha256:5f5f772248c2cb5eadd5c7ce951c83b97943cb4d5735285052e2ea6d3b069b79
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 256Mi
+          env:
+            - name: VELERO_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: velero-backblaze-config
+                  key: bucket
+            - name: VELERO_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: velero-backblaze-config
+                  key: region
+            - name: VELERO_S3_URL
+              valueFrom:
+                secretKeyRef:
+                  name: velero-backblaze-config
+                  key: s3Url
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              while true; do
+                printf '%s\n' \
+                  'apiVersion: velero.io/v1' \
+                  'kind: BackupStorageLocation' \
+                  'metadata:' \
+                  '  name: default' \
+                  '  namespace: velero' \
+                  '  annotations:' \
+                  '    homelab.io/managed-by: velero-bsl-reconciler' \
+                  'spec:' \
+                  '  provider: aws' \
+                  '  objectStorage:' \
+                  "    bucket: ${VELERO_BUCKET}" \
+                  '  accessMode: ReadWrite' \
+                  '  default: true' \
+                  '  credential:' \
+                  '    name: velero-backblaze-credentials' \
+                  '    key: cloud' \
+                  '  config:' \
+                  "    region: ${VELERO_REGION}" \
+                  '    s3ForcePathStyle: "true"' \
+                  "    s3Url: ${VELERO_S3_URL}" | kubectl apply -f -
+                sleep 300
+              done

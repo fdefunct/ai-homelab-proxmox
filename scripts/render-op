@@ -1,0 +1,55 @@
+#!/bin/bash
+set -euo pipefail
+
+usage() {
+  printf 'Usage: %s <inject|read> <path> <context>\n' "$0" >&2
+  exit 1
+}
+
+if [ "$#" -ne 3 ]; then
+  usage
+fi
+
+MODE="$1"
+TARGET_PATH="$2"
+CONTEXT="$3"
+OP_BIN="${OP_BIN:-op}"
+
+if [ ! -f Makefile ]; then
+  printf 'Run this script from the repository root.\n' >&2
+  exit 1
+fi
+
+if [ ! -f "$TARGET_PATH" ]; then
+  printf 'Missing %s\n' "$TARGET_PATH" >&2
+  exit 1
+fi
+
+if ! command -v "$OP_BIN" >/dev/null 2>&1; then
+  printf "1Password CLI not found. Install 'op' and sign in before running %s.\n" "$CONTEXT" >&2
+  exit 1
+fi
+
+if ! "$OP_BIN" account list >/dev/null 2>&1; then
+  printf "1Password CLI is not signed in. Run 'op signin' first.\n" >&2
+  exit 1
+fi
+
+case "$MODE" in
+  inject)
+    exec "$OP_BIN" inject -i "$TARGET_PATH"
+    ;;
+  read)
+    REFERENCE="$(grep -v '^[[:space:]]*#' "$TARGET_PATH" | awk 'NF { print; exit }')"
+
+    if [ -z "$REFERENCE" ]; then
+      printf 'No 1Password reference found in %s\n' "$TARGET_PATH" >&2
+      exit 1
+    fi
+
+    exec "$OP_BIN" read "$REFERENCE"
+    ;;
+  *)
+    usage
+    ;;
+esac

@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+
+GITLEAKS_BIN="${GITLEAKS_BIN:-gitleaks}"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+if [[ -f "$REPO_ROOT/.gitleaks.toml" ]]; then
+  exec "$GITLEAKS_BIN" git "$REPO_ROOT" --config "$REPO_ROOT/.gitleaks.toml" --log-opts="--all" --redact "$@"
+fi
+
+exec "$GITLEAKS_BIN" git "$REPO_ROOT" --log-opts="--all" --redact "$@"

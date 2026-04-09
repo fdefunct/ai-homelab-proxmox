@@ -1,0 +1,99 @@
+- name: Install host observability packages
+  ansible.builtin.apt:
+    name:
+      - prometheus-node-exporter
+    state: present
+  when: watchtower_monitoring_enabled
+
+- name: Ensure smartmontools is enabled for disk health checks
+  ansible.builtin.service:
+    name: smartmontools
+    enabled: true
+    state: started
+  when: watchtower_monitoring_enabled
+
+- name: Ensure Prometheus node exporter is enabled
+  ansible.builtin.service:
+    name: prometheus-node-exporter
+    enabled: true
+    state: started
+  when: watchtower_monitoring_enabled
+
+- name: Install the local host health check
+  ansible.builtin.copy:
+    dest: /usr/local/bin/homelab-host-healthcheck
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+
+      zpool list -H -o health {{ vmdata_pool_name | quote }} | grep -qx ONLINE
+      smartctl -H {{ vmdata_device | quote }} | grep -Eq 'PASSED|OK'
+
+      if systemctl list-unit-files tailscaled.service >/dev/null 2>&1; then
+        systemctl is-active --quiet tailscaled.service
+      fi
+  when: watchtower_monitoring_enabled
+
+- name: Install the local host health-check service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/homelab-host-healthcheck.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Homelab foundation host health check
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/homelab-host-healthcheck
+  notify: Reload Systemd
+  when: watchtower_monitoring_enabled
+
+- name: Install the local host health-check timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/homelab-host-healthcheck.timer
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Run homelab foundation host health check every 15 minutes
+
+      [Timer]
+      OnBootSec=10m
+      OnUnitActiveSec=15m
+      Unit=homelab-host-healthcheck.service
+
+      [Install]
+      WantedBy=timers.target
+  notify: Reload Systemd
+  when: watchtower_monitoring_enabled
+
+- name: Enable the local host health-check timer
+  ansible.builtin.service:
+    name: homelab-host-healthcheck.timer
+    enabled: true
+    state: started
+  when: watchtower_monitoring_enabled
+
+- name: Enable the scheduled ZFS scrub timer
+  ansible.builtin.service:
+    name: "zfs-scrub-{{ vmdata_scrub_schedule }}@{{ vmdata_pool_name }}.timer"
+    enabled: true
+    state: started
+  when:
+    - watchtower_monitoring_enabled
+    - vmdata_filesystem_type == 'zfs'
+
+- name: Run the host health-check once immediately
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/homelab-host-healthcheck
+  changed_when: false
+  when: watchtower_monitoring_enabled

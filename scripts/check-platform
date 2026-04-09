@@ -1,0 +1,202 @@
+#!/bin/bash
+set -euo pipefail
+
+REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$REPO_ROOT"
+ENV_NAME="${ENV_NAME:-home}"
+ENV_CONFIG_PATH="$REPO_ROOT/config/$ENV_NAME.yaml"
+INVENTORY_PATH="$REPO_ROOT/ansible/inventories/$ENV_NAME/generated.yml"
+PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
+
+need_file() {
+  if [ ! -f "$1" ]; then
+    printf 'Missing required file: %s\n' "$1" >&2
+    exit 1
+  fi
+}
+
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'Missing required command: %s\n' "$1" >&2
+    exit 1
+  fi
+}
+
+need_cmd kubectl
+need_cmd git
+need_cmd curl
+need_file "$ENV_CONFIG_PATH"
+need_file "$INVENTORY_PATH"
+need_file "$PYTHON_BIN"
+
+CONFIG_EXPORTS=$(
+  "$PYTHON_BIN" - "$ENV_CONFIG_PATH" "$INVENTORY_PATH" "$REPO_ROOT" <<'PY'
+from pathlib import Path
+import shlex
+import sys
+import yaml
+
+config = yaml.safe_load(Path(sys.argv[1]).read_text())
+inventory = yaml.safe_load(Path(sys.argv[2]).read_text())
+repo_root = Path(sys.argv[3])
+
+server_group = inventory["all"]["vars"]["k3s_server_group"]
+server_name = next(iter(inventory["all"]["children"][server_group]["hosts"]))
+platform = config["platform"]
+platform_apps = []
+
+for path in sorted((repo_root / "kubernetes" / "apps" / "platform").rglob("application.yaml")):
+    docs = [doc for doc in yaml.safe_load_all(path.read_text()) if doc is not None]
+    app = next(
+        (
+            doc.get("metadata", {}).get("name")
+            for doc in docs
+            if isinstance(doc, dict) and doc.get("kind") == "Application"
+        ),
+        None,
+    )
+    if not isinstance(app, str) or not app:
+        raise SystemExit(f"{path}: expected an Application with metadata.name")
+    platform_apps.append(app)
+
+exports = {
+    "KUBECONFIG_PATH_DEFAULT": f"ansible/artifacts/kubeconfig/{server_name}.yaml",
+    "ARGOCD_URL_DEFAULT": f'https://{platform["argocd_hostname"]}/',
+    "HOMEPAGE_URL_DEFAULT": f'https://{platform["homepage_hostname"]}/',
+    "HOME_ASSISTANT_URL_DEFAULT": f'https://{platform["home_assistant_hostname"]}/',
+    "LONGHORN_URL_DEFAULT": f'https://{platform["longhorn_hostname"]}/',
+    "ARGO_APPS_DEFAULT": " ".join(["root-app", *platform_apps]),
+}
+
+for key, value in exports.items():
+    print(f"export {key}={shlex.quote(value)}")
+PY
+)
+eval "$CONFIG_EXPORTS"
+
+KUBECONFIG_PATH="${KUBECONFIG_PATH:-$KUBECONFIG_PATH_DEFAULT}"
+ARGOCD_URL="${ARGOCD_URL:-$ARGOCD_URL_DEFAULT}"
+HOMEPAGE_URL="${HOMEPAGE_URL:-$HOMEPAGE_URL_DEFAULT}"
+HOME_ASSISTANT_URL="${HOME_ASSISTANT_URL:-$HOME_ASSISTANT_URL_DEFAULT}"
+LONGHORN_URL="${LONGHORN_URL:-$LONGHORN_URL_DEFAULT}"
+ARGO_APPS="${ARGO_APPS:-$ARGO_APPS_DEFAULT}"
+
+need_file "$KUBECONFIG_PATH"
+
+REMOTE_REF=refs/remotes/origin/main
+
+if ! git fetch --quiet --no-tags origin refs/heads/main:refs/remotes/origin/main; then
+  printf 'Unable to refresh origin/main.\n' >&2
+  exit 1
+fi
+
+if ! git rev-parse --verify "$REMOTE_REF^{commit}" >/dev/null 2>&1; then
+  printf 'Unable to resolve origin/main revision.\n' >&2
+  exit 1
+fi
+
+if ! git diff --quiet "$REMOTE_REF" -- kubernetes; then
+  printf '%s\n' "Local kubernetes/ changes differ from origin/main. Commit and push GitOps changes before trusting platform convergence." >&2
+  exit 1
+fi
+
+if [ -n "$(git ls-files --others --exclude-standard -- kubernetes)" ]; then
+  printf '%s\n' "Untracked files exist under kubernetes/. Commit and push GitOps changes before trusting platform convergence." >&2
+  exit 1
+fi
+
+local_kubectl() {
+  KUBECONFIG="$KUBECONFIG_PATH" kubectl "$@"
+}
+
+app_field() {
+  app_name=$1
+  field=$2
+  local_kubectl -n argocd get application "${app_name}" -o "jsonpath={${field}}"
+}
+
+check_equals() {
+  label=$1
+  actual=$2
+  expected=$3
+
+  if [ "$actual" != "$expected" ]; then
+    printf 'FAIL: %s (expected %s, got %s)\n' "$label" "$expected" "$actual" >&2
+    exit 1
+  fi
+
+  printf 'OK: %s = %s\n' "$label" "$actual"
+}
+
+check_url() {
+  url=$1
+
+  if curl -fsSIL --max-time 20 "$url" >/dev/null 2>&1; then
+    printf 'OK: %s returned successful headers\n' "$url"
+    return 0
+  fi
+
+  if curl -fsS --max-time 20 "$url" >/dev/null 2>&1; then
+    printf 'OK: %s returned a successful GET response\n' "$url"
+    return 0
+  fi
+
+  printf 'FAIL: %s did not return a successful HEAD or GET response\n' "$url" >&2
+  exit 1
+}
+
+printf '%s\n' "Argo CD applications:"
+local_kubectl -n argocd get applications.argoproj.io
+
+printf '\n%s\n' "Convergence checks:"
+for app in $ARGO_APPS; do
+  check_equals "$app sync" "$(app_field "$app" '.status.sync.status')" "Synced"
+  check_equals "$app health" "$(app_field "$app" '.status.health.status')" "Healthy"
+done
+
+check_equals "onepassword-connect deployment ready" "$(local_kubectl -n onepassword-connect wait --for=condition=Available deployment/onepassword-connect --timeout=1s >/dev/null 2>&1 && printf True || printf False)" "True" # gitleaks:allow
+check_equals "argocd-server tls certificate ready" "$(local_kubectl -n argocd wait --for=condition=Ready certificate/argocd-server-tls --timeout=1s >/dev/null 2>&1 && printf True || printf False)" "True"
+check_equals "home-assistant tls certificate ready" "$(local_kubectl -n home-assistant wait --for=condition=Ready certificate/home-assistant-tls --timeout=1s >/dev/null 2>&1 && printf True || printf False)" "True"
+check_equals "homepage tls certificate ready" "$(local_kubectl -n homepage wait --for=condition=Ready certificate/homepage-tls --timeout=1s >/dev/null 2>&1 && printf True || printf False)" "True"
+check_equals "homepage argocd token ready" "$(local_kubectl -n homepage wait --for=condition=Ready externalsecret/homepage-argocd-token --timeout=1s >/dev/null 2>&1 && printf True || printf False)" "True"
+check_equals "renovate token ready" "$(local_kubectl -n renovate wait --for=condition=Ready externalsecret/renovate-env --timeout=1s >/dev/null 2>&1 && printf True || printf False)" "True"
+check_equals "renovate cronjob present" "$(local_kubectl -n renovate get cronjob/renovate >/dev/null 2>&1 && printf True || printf False)" "True"
+check_equals "velero backup storage ready" "$(local_kubectl -n velero get backupstoragelocation default -o jsonpath='{.status.phase}')" "Available"
+check_equals "prometheus agent deployment ready" "$(local_kubectl -n telemetry wait --for=condition=Available deployment/prometheus-agent --timeout=1s >/dev/null 2>&1 && printf True || printf False)" "True"
+check_equals "longhorn is default storage class" "$(local_kubectl get storageclass longhorn -o jsonpath='{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}')" "true"
+check_equals "local-path storage class removed" "$(local_kubectl get storageclass local-path >/dev/null 2>&1 && printf False || printf True)" "True"
+check_equals "longhorn manager ready" "$(local_kubectl -n longhorn-system wait --for=condition=Ready pod -l app=longhorn-manager --timeout=1s >/dev/null 2>&1 && printf True || printf False)" "True"
+check_equals "longhorn ui ready" "$(local_kubectl -n longhorn-system wait --for=condition=Available deployment/longhorn-ui --timeout=1s >/dev/null 2>&1 && printf True || printf False)" "True"
+
+printf '\n%s\n' "ClusterSecretStore:"
+local_kubectl get clustersecretstore onepassword-sdk
+
+printf '\n%s\n' "1Password Connect:"
+local_kubectl -n onepassword-connect get deploy,pods,svc
+
+printf '\n%s\n' "Velero backup storage location:"
+local_kubectl -n velero get backupstoragelocation default -o wide
+
+printf '\n%s\n' "Storage classes:"
+local_kubectl get storageclass
+
+printf '\n%s\n' "Longhorn:"
+local_kubectl -n longhorn-system get pods
+
+printf '\n%s\n' "ExternalSecret status:"
+local_kubectl -n cert-manager get externalsecret cloudflare-api-token-secret
+local_kubectl -n homepage get externalsecret homepage-argocd-token
+local_kubectl -n renovate get externalsecret renovate-env
+local_kubectl -n velero get externalsecret velero-backblaze-credentials
+
+printf '\n%s\n' "Renovate:"
+local_kubectl -n renovate get cronjob renovate
+if local_kubectl -n renovate get jobs >/dev/null 2>&1; then
+  local_kubectl -n renovate get jobs --sort-by=.metadata.creationTimestamp
+fi
+
+printf '\n%s\n' "Endpoint checks:"
+check_url "$ARGOCD_URL"
+check_url "$HOMEPAGE_URL"
+check_url "$HOME_ASSISTANT_URL"
+check_url "$LONGHORN_URL"

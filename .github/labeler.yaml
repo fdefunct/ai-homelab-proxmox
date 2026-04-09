@@ -1,0 +1,42 @@
+# Automatic PR label rules for actions/labeler.
+# Maps file glob patterns to labels defined in .github/labels.yaml.
+# Applied by .github/workflows/labeler.yml on every PR to main.
+
+area/config:
+  - changed-files:
+      - any-glob-to-any-file: "config/**"
+
+area/ansible:
+  - changed-files:
+      - any-glob-to-any-file: "ansible/**"
+
+area/github:
+  - changed-files:
+      - any-glob-to-any-file: ".github/**"
+      - any-glob-to-any-file: ".gitignore"
+      - any-glob-to-any-file: "lefthook.yml"
+
+area/renovate:
+  - changed-files:
+      - any-glob-to-any-file: ".renovate/**"
+      - any-glob-to-any-file: ".renovaterc.json5"
+
+area/kubernetes:
+  - changed-files:
+      - any-glob-to-any-file: "kubernetes/**"
+
+area/scripts:
+  - changed-files:
+      - any-glob-to-any-file: "scripts/**"
+
+area/terraform:
+  - changed-files:
+      - any-glob-to-any-file: "terraform/**"
+      - any-glob-to-any-file: ".tflint.hcl"
+
+area/docs:
+  - changed-files:
+      - any-glob-to-any-file: "docs/**"
+      - any-glob-to-any-file: "README.md"
+      - any-glob-to-any-file: "CLAUDE.md"
+      - any-glob-to-any-file: "**/*.md"

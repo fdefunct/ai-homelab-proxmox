@@ -1,0 +1,283 @@
+#!/bin/bash
+set -euo pipefail
+
+REPO_ROOT="$(
+  unset CDPATH
+  cd -- "$(dirname -- "$0")/.." && pwd
+)"
+# shellcheck disable=SC1091
+. "$REPO_ROOT/tool-versions.env"
+
+VENV_DIR=".venv"
+VENV_BIN="$VENV_DIR/bin"
+ENV_NAME="${ENV_NAME:-home}"
+PYTHON_BIN=""
+
+install_with_brew() {
+  package="$1"
+  if brew list "$package" >/dev/null 2>&1; then
+    printf '%s already installed via Homebrew\n' "$package"
+  else
+    brew install "$package"
+  fi
+}
+
+install_with_apt() {
+  package="$1"
+  if dpkg -s "$package" >/dev/null 2>&1; then
+    printf '%s already installed via apt\n' "$package"
+  else
+    sudo apt-get update
+    sudo apt-get install -y "$package"
+  fi
+}
+
+install_actionlint() {
+  os="$(uname -s)"
+  arch="$(uname -m)"
+
+  case "$os" in
+    Darwin) platform="darwin" ;;
+    Linux) platform="linux" ;;
+    *)
+      printf 'Unsupported OS for automatic actionlint install: %s\n' "$os" >&2
+      printf 'Install actionlint manually, then rerun scripts/bootstrap.\n' >&2
+      exit 1
+      ;;
+  esac
+
+  case "$arch" in
+    x86_64|amd64) archive_arch="amd64" ;;
+    arm64|aarch64) archive_arch="arm64" ;;
+    *)
+      printf 'Unsupported architecture for automatic actionlint install: %s\n' "$arch" >&2
+      printf 'Install actionlint manually, then rerun scripts/bootstrap.\n' >&2
+      exit 1
+      ;;
+  esac
+
+  if ! command -v curl >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1; then
+    printf 'curl and tar are required to install actionlint automatically.\n' >&2
+    printf 'Install actionlint manually, then rerun scripts/bootstrap.\n' >&2
+    exit 1
+  fi
+
+  tmp_dir="$(mktemp -d)"
+  archive_name="actionlint_${ACTIONLINT_VERSION}_${platform}_${archive_arch}.tar.gz"
+
+  cleanup_actionlint_install() {
+    rm -rf "$tmp_dir"
+  }
+  trap cleanup_actionlint_install RETURN
+
+  ./scripts/download-github-release-asset \
+    rhysd/actionlint \
+    "$ACTIONLINT_VERSION" \
+    "$archive_name" \
+    "actionlint_${ACTIONLINT_VERSION}_checksums.txt" \
+    "$tmp_dir/$archive_name"
+  tar -xzf "$tmp_dir/$archive_name" -C "$tmp_dir"
+
+  if [ -w /usr/local/bin ]; then
+    install "$tmp_dir/actionlint" /usr/local/bin/actionlint
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo install "$tmp_dir/actionlint" /usr/local/bin/actionlint
+  else
+    printf 'Need write access to /usr/local/bin to install actionlint automatically.\n' >&2
+    printf 'Install actionlint manually, then rerun scripts/bootstrap.\n' >&2
+    exit 1
+  fi
+}
+
+install_release_tarball_binary() {
+  repo="$1"
+  version="$2"
+  archive_name="$3"
+  checksum_asset_name="$4"
+  binary_name="$5"
+
+  if ! command -v curl >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1; then
+    printf 'curl and tar are required to install %s automatically.\n' "$binary_name" >&2
+    printf 'Install it manually, then rerun scripts/bootstrap.\n' >&2
+    exit 1
+  fi
+
+  tmp_dir="$(mktemp -d)"
+  cleanup_release_install() {
+    rm -rf "$tmp_dir"
+  }
+  trap cleanup_release_install RETURN
+
+  ./scripts/download-github-release-asset \
+    "$repo" \
+    "$version" \
+    "$archive_name" \
+    "$checksum_asset_name" \
+    "$tmp_dir/$archive_name"
+  tar -xzf "$tmp_dir/$archive_name" -C "$tmp_dir"
+  install "$tmp_dir/$binary_name" "$VENV_BIN/$binary_name"
+  trap - RETURN
+  cleanup_release_install
+}
+
+install_kubeconform() {
+  os="$(uname -s)"
+  arch="$(uname -m)"
+
+  case "$os" in
+    Darwin) platform="darwin" ;;
+    Linux) platform="linux" ;;
+    *)
+      printf 'Unsupported OS for automatic kubeconform install: %s\n' "$os" >&2
+      printf 'Install kubeconform manually, then rerun scripts/bootstrap.\n' >&2
+      exit 1
+      ;;
+  esac
+
+  case "$arch" in
+    x86_64|amd64) archive_arch="amd64" ;;
+    arm64|aarch64) archive_arch="arm64" ;;
+    *)
+      printf 'Unsupported architecture for automatic kubeconform install: %s\n' "$arch" >&2
+      printf 'Install kubeconform manually, then rerun scripts/bootstrap.\n' >&2
+      exit 1
+      ;;
+  esac
+
+  if [ -x "$VENV_BIN/kubeconform" ] && "$VENV_BIN/kubeconform" -v 2>/dev/null | grep -Fq "$KUBECONFORM_VERSION"; then
+    printf 'kubeconform %s already available in %s\n' "$KUBECONFORM_VERSION" "$VENV_BIN"
+    return
+  fi
+
+  install_release_tarball_binary \
+    yannh/kubeconform \
+    "$KUBECONFORM_VERSION" \
+    "kubeconform-${platform}-${archive_arch}.tar.gz" \
+    CHECKSUMS \
+    kubeconform
+  printf 'Installed kubeconform %s into %s\n' "$KUBECONFORM_VERSION" "$VENV_BIN"
+}
+
+install_gitleaks() {
+  os="$(uname -s)"
+  arch="$(uname -m)"
+
+  case "$os" in
+    Darwin) platform="darwin" ;;
+    Linux) platform="linux" ;;
+    *)
+      printf 'Unsupported OS for automatic gitleaks install: %s\n' "$os" >&2
+      printf 'Install gitleaks manually, then rerun scripts/bootstrap.\n' >&2
+      exit 1
+      ;;
+  esac
+
+  case "$arch" in
+    x86_64|amd64) archive_arch="x64" ;;
+    arm64|aarch64) archive_arch="arm64" ;;
+    *)
+      printf 'Unsupported architecture for automatic gitleaks install: %s\n' "$arch" >&2
+      printf 'Install gitleaks manually, then rerun scripts/bootstrap.\n' >&2
+      exit 1
+      ;;
+  esac
+
+  if [ -x "$VENV_BIN/gitleaks" ] && "$VENV_BIN/gitleaks" version 2>/dev/null | grep -Fq "$GITLEAKS_VERSION"; then
+    printf 'gitleaks %s already available in %s\n' "$GITLEAKS_VERSION" "$VENV_BIN"
+    return
+  fi
+
+  install_release_tarball_binary \
+    gitleaks/gitleaks \
+    "$GITLEAKS_VERSION" \
+    "gitleaks_${GITLEAKS_VERSION}_${platform}_${archive_arch}.tar.gz" \
+    "gitleaks_${GITLEAKS_VERSION}_checksums.txt" \
+    gitleaks
+  printf 'Installed gitleaks %s into %s\n' "$GITLEAKS_VERSION" "$VENV_BIN"
+}
+
+require_or_install() {
+  command_name="$1"
+  brew_package="$2"
+  apt_package="$3"
+
+  if command -v "$command_name" >/dev/null 2>&1; then
+    printf '%s already available\n' "$command_name"
+    return
+  fi
+
+  if command -v brew >/dev/null 2>&1; then
+    install_with_brew "$brew_package"
+    return
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    install_with_apt "$apt_package"
+    return
+  fi
+
+  printf 'Missing %s and no supported package manager found.\n' "$command_name" >&2
+  printf 'Install it manually, then rerun scripts/bootstrap.\n' >&2
+  exit 1
+}
+
+require_or_install terraform terraform terraform
+require_or_install python3 python python3
+require_or_install tflint tflint tflint
+require_or_install shellcheck shellcheck shellcheck
+require_or_install node node nodejs
+
+if command -v actionlint >/dev/null 2>&1; then
+  printf 'actionlint already available\n'
+elif command -v brew >/dev/null 2>&1; then
+  install_with_brew actionlint
+else
+  install_actionlint
+  printf 'Installed actionlint %s\n' "$ACTIONLINT_VERSION"
+fi
+
+for candidate in "python${PYTHON_VERSION}" python3.12 python3.11 python3.10 python3; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+      PYTHON_BIN="$candidate"
+      break
+    fi
+  fi
+done
+
+if [ -z "$PYTHON_BIN" ]; then
+  printf 'A Python 3.10+ interpreter is required for the repo-local toolchain.\n' >&2
+  printf 'Install python3.10+ and rerun scripts/bootstrap.\n' >&2
+  exit 1
+fi
+
+mkdir -p ansible/artifacts
+mkdir -p .ansible/tmp
+mkdir -p .ansible/collections
+mkdir -p .ansible/plugins/modules
+
+if [ ! -d "$VENV_DIR" ]; then
+  "$PYTHON_BIN" -m venv "$VENV_DIR"
+  printf 'Created %s\n' "$VENV_DIR"
+fi
+
+"$VENV_BIN/python" -m pip install --upgrade pip
+"$VENV_BIN/pip" install -r requirements/bootstrap.txt
+"$VENV_BIN/ansible-galaxy" collection install -r ansible/requirements.yml -p .ansible/collections >/dev/null
+npm ci
+install_kubeconform
+install_gitleaks
+
+"$VENV_BIN/python" ./scripts/generate-config "$ENV_NAME" >/dev/null
+
+if command -v op >/dev/null 2>&1; then
+  printf 'op already available\n'
+else
+  printf '1Password CLI (op) not found. Install it manually before running make verify or make ansible.\n'
+fi
+
+printf 'Using repo-local tools from %s\n' "$VENV_BIN"
+printf 'Using Python interpreter: %s\n' "$PYTHON_BIN"
+printf 'Using Node.js: %s\n' "$(node --version)"
+printf 'Bootstrapped environment: %s\n' "$ENV_NAME"
+printf 'Bootstrap complete\n'

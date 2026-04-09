@@ -1,0 +1,49 @@
+- name: Wait for worker nodes to join the cluster
+  ansible.builtin.command:
+    cmd: /usr/local/bin/k3s kubectl get node {{ item }}
+  loop: "{{ k3s_agent_hosts }}"
+  register: k3s_agent_join_result
+  retries: 30
+  delay: 10
+  until: k3s_agent_join_result is succeeded
+  changed_when: false
+
+- name: Read existing taints on the control-plane node
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl get node {{ inventory_hostname }} -o jsonpath={.spec.taints[*].key}
+  register: k3s_server_taints_raw
+  changed_when: false
+  failed_when: false
+
+- name: Taint the control-plane node
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl taint node {{ inventory_hostname }} node-role.kubernetes.io/control-plane=true:NoSchedule --overwrite
+  when: "'node-role.kubernetes.io/control-plane' not in (k3s_server_taints_raw.stdout | default(''))"
+  changed_when: true
+
+- name: Read remote kubeconfig
+  ansible.builtin.slurp:
+    src: /etc/rancher/k3s/k3s.yaml
+  register: k3s_kubeconfig_raw
+
+- name: Ensure local kubeconfig artifact directory exists
+  ansible.builtin.file:
+    path: "{{ k3s_kubeconfig_local_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: Write local kubeconfig
+  ansible.builtin.copy:
+    dest: "{{ k3s_kubeconfig_local_dir }}/{{ inventory_hostname }}.yaml"
+    mode: "0600"
+    content: >-
+      {{
+        (k3s_kubeconfig_raw.content | b64decode)
+        | regex_replace('https://127.0.0.1:6443', k3s_kubeconfig_server)
+      }}
+  delegate_to: localhost
+  become: false

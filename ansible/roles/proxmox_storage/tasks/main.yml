@@ -1,0 +1,169 @@
+- name: Assert the storage mode is supported
+  ansible.builtin.assert:
+    that:
+      - vmdata_filesystem_type == 'zfs'
+    fail_msg: "Only zfs storage automation is implemented right now"
+
+- name: Ensure ZFS tooling is installed
+  ansible.builtin.apt:
+    name:
+      - zfsutils-linux
+    state: present
+
+- name: Ensure the VM data device exists
+  ansible.builtin.stat:
+    path: "{{ vmdata_device }}"
+    follow: true
+  register: vmdata_device_stat
+
+- name: Fail early when the VM data device path is invalid
+  ansible.builtin.assert:
+    that:
+      - vmdata_device_stat.stat.exists
+      - vmdata_device_stat.stat.isblk | default(false)
+    fail_msg: "vmdata_device must point to a real block device"
+
+- name: Optionally wipe existing disk signatures
+  ansible.builtin.command:
+    argv:
+      - wipefs
+      - --all
+      - "{{ vmdata_device }}"
+  when: vmdata_wipe_signatures
+  changed_when: true
+
+- name: Check whether the ZFS pool already exists
+  ansible.builtin.command:
+    argv:
+      - zpool
+      - list
+      - -H
+      - -o
+      - name
+      - "{{ vmdata_pool_name }}"
+  register: zpool_list
+  failed_when: false
+  changed_when: false
+
+- name: Try to import an existing ZFS pool
+  ansible.builtin.command:
+    argv:
+      - zpool
+      - import
+      - "{{ vmdata_pool_name }}"
+  register: zpool_import
+  failed_when: false
+  changed_when: zpool_import.rc == 0
+  when: zpool_list.rc != 0
+
+- name: Re-check whether the ZFS pool exists after import
+  ansible.builtin.command:
+    argv:
+      - zpool
+      - list
+      - -H
+      - -o
+      - name
+      - "{{ vmdata_pool_name }}"
+  register: zpool_list_after_import
+  failed_when: false
+  changed_when: false
+  when: zpool_list.rc != 0
+
+- name: Create the ZFS pool for guest storage
+  ansible.builtin.command:
+    argv:
+      - zpool
+      - create
+      - -f
+      - -o
+      - ashift=12
+      - -O
+      - compression={{ vmdata_compression }}
+      - -O
+      - atime=off
+      - -O
+      - xattr=sa
+      - -O
+      - acltype=posixacl
+      - -O
+      - mountpoint=/{{ vmdata_pool_name }}
+      - "{{ vmdata_pool_name }}"
+      - "{{ vmdata_device }}"
+  when:
+    - zpool_list.rc != 0
+    - (zpool_list_after_import.rc | default(1)) != 0
+  changed_when: true
+
+- name: Read current ZFS compression setting
+  ansible.builtin.command:
+    argv:
+      - zfs
+      - get
+      - -H
+      - -o
+      - value
+      - compression
+      - "{{ vmdata_pool_name }}"
+  register: zfs_compression_current
+  changed_when: false
+
+- name: Ensure ZFS compression is configured
+  ansible.builtin.command:
+    argv:
+      - zfs
+      - set
+      - compression={{ vmdata_compression }}
+      - "{{ vmdata_pool_name }}"
+  when: zfs_compression_current.stdout | trim != vmdata_compression
+  changed_when: true
+
+- name: Read current ZFS autotrim setting
+  ansible.builtin.command:
+    argv:
+      - zpool
+      - get
+      - -H
+      - -o
+      - value
+      - autotrim
+      - "{{ vmdata_pool_name }}"
+  register: zpool_autotrim_current
+  changed_when: false
+
+- name: Ensure ZFS autotrim is configured
+  ansible.builtin.command:
+    argv:
+      - zpool
+      - set
+      - autotrim={{ 'on' if vmdata_autotrim else 'off' }}
+      - "{{ vmdata_pool_name }}"
+  when: zpool_autotrim_current.stdout | trim != ('on' if vmdata_autotrim else 'off')
+  changed_when: true
+
+- name: Check whether the Proxmox datastore already exists
+  ansible.builtin.command:
+    argv:
+      - pvesm
+      - status
+      - --storage
+      - "{{ vmdata_storage_id }}"
+  register: pve_storage_status
+  failed_when: false
+  changed_when: false
+
+- name: Add the Proxmox ZFS datastore
+  ansible.builtin.command:
+    argv:
+      - pvesm
+      - add
+      - zfspool
+      - "{{ vmdata_storage_id }}"
+      - --pool
+      - "{{ vmdata_pool_name }}"
+      - --content
+      - "{{ vmdata_content_types | join(',') }}"
+      - --sparse
+      - "1"
+  when: pve_storage_status.rc != 0
+  changed_when: true

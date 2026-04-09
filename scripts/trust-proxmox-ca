@@ -1,0 +1,66 @@
+#!/bin/bash
+set -euo pipefail
+
+ENV_NAME="${ENV_NAME:-home}"
+REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$REPO_ROOT"
+
+TMP_SECRETS="$(mktemp /tmp/homelab-pve-trust-secrets.XXXXXX)"
+TMP_KEY="$(mktemp /tmp/homelab-pve-trust-key.XXXXXX)"
+TMP_CERT="$(mktemp /tmp/homelab-pve-root-ca.XXXXXX.pem)"
+
+cleanup() {
+  rm -f "$TMP_SECRETS" "$TMP_KEY" "$TMP_CERT"
+}
+trap cleanup EXIT INT TERM
+
+if [ ! -f "config/$ENV_NAME.yaml" ]; then
+  printf "Missing config/%s.yaml\n" "$ENV_NAME" >&2
+  exit 1
+fi
+
+./scripts/render-terraform-secrets > "$TMP_SECRETS"
+
+SSH_USERNAME="$(awk -F ' = ' '/^proxmox_ssh_username/ { gsub(/"/, "", $2); print $2 }' "$TMP_SECRETS")"
+
+sed -n '/^proxmox_ssh_private_key = <<-EOT$/,/^EOT$/p' "$TMP_SECRETS" | sed '1d;$d' > "$TMP_KEY"
+chmod 600 "$TMP_KEY"
+
+PVE_HOST="$(
+  awk '
+    $1 == "endpoint:" {
+      value = $2
+      gsub(/^https:\/\//, "", value)
+      sub(/\/.*/, "", value)
+      sub(/:.*/, "", value)
+      print value
+      exit
+    }
+  ' "config/$ENV_NAME.yaml"
+)"
+
+if [ -z "$PVE_HOST" ]; then
+  printf "Could not parse terraform.endpoint host from config/%s.yaml\n" "$ENV_NAME" >&2
+  exit 1
+fi
+
+ssh -i "$TMP_KEY" -o StrictHostKeyChecking=accept-new "${SSH_USERNAME}@${PVE_HOST}" "sudo cat /etc/pve/pve-root-ca.pem" > "$TMP_CERT"
+
+FINGERPRINT="$(openssl x509 -in "$TMP_CERT" -noout -fingerprint -sha256 | awk -F '=' '{print $2}')"
+
+case "$(uname -s)" in
+  Darwin)
+    KEYCHAIN="${HOME}/Library/Keychains/login.keychain-db"
+    if security find-certificate -a -Z -c "Proxmox Virtual Environment" "$KEYCHAIN" 2>/dev/null | grep -q "$FINGERPRINT"; then
+      printf "Proxmox CA %s is already trusted in %s\n" "$FINGERPRINT" "$KEYCHAIN"
+      exit 0
+    fi
+    security add-trusted-cert -d -r trustRoot -k "$KEYCHAIN" "$TMP_CERT"
+    printf "Trusted Proxmox CA %s in %s\n" "$FINGERPRINT" "$KEYCHAIN"
+    ;;
+  *)
+    printf "Fetched Proxmox CA %s to %s\n" "$FINGERPRINT" "$TMP_CERT"
+    printf "Automatic trust install is only implemented for macOS right now.\n" >&2
+    exit 1
+    ;;
+esac

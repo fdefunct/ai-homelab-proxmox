@@ -1,0 +1,24 @@
+image:
+  digest: sha256:6581783f7339ca1534b9da4c026362d556fce19f7462ab4cd8ad3f68bc7dbd80
+
+architecture: standalone
+
+auth:
+  existingSecret: redis-auth
+  existingSecretPasswordKey: redis-password
+
+master:
+  persistence:
+    enabled: true
+    storageClass: longhorn
+    size: 1Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+metrics:
+  enabled: false

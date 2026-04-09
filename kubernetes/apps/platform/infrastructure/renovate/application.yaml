@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/argoproj.io/application_v1alpha1.json
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: renovate
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "60"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: renovate
+  sources:
+    - repoURL: https://renovatebot.github.io/helm-charts
+      chart: renovate
+      targetRevision: 46.106.6
+      helm:
+        releaseName: renovate
+        valueFiles:
+          - $values/kubernetes/charts/renovate/values.yaml
+    - repoURL: git@github.com:your-github-user/ai-homelab-proxmox.git
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

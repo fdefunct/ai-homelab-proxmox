@@ -1,0 +1,6 @@
+external_secrets_bootstrap_namespace: "onepassword-connect"
+external_secrets_bootstrap_deployment_name: "onepassword-connect"
+external_secrets_bootstrap_token_secret_name: "onepassword-connect-token"
+external_secrets_bootstrap_token_secret_key: "token"
+external_secrets_bootstrap_credentials_secret_name: "onepassword-connect-credentials"
+external_secrets_bootstrap_credentials_secret_key: "1password-credentials.json"

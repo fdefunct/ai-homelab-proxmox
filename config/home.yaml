@@ -1,0 +1,328 @@
+environment: home
+
+terraform:
+  endpoint: https://192.0.2.50:8006/api2/json
+  insecure: false
+  node_name: pve-0
+  pool_id: homelab
+  vm_disk_storage: nvme-fast
+  iso_storage: local
+  snippet_storage: local
+  template_storage: local-zfs
+
+ansible:
+  bootstrap_group: proxmox
+  k3s_server_group: k3s_server
+  k3s_agent_group: k3s_agents
+  operator_user: homelab-ops
+  timezone: Etc/UTC
+  locale: en_US.UTF-8
+  manage_no_subscription_repo: true
+  enable_enterprise_repo: false
+  install_tailscale: true
+  tailscale_ssh: false
+  tailscale_accept_routes: false
+  tailscale_accept_dns: false
+  tailscale_advertise_exit_node: false
+  tailscale_advertise_routes: []
+  configure_iommu: true
+  remove_os_prober: true
+  datacenter_firewall_enabled: false
+  datacenter_firewall_input_policy: DROP
+  datacenter_firewall_output_policy: ACCEPT
+  node_firewall_enabled: false
+  argocd_repo_url: git@github.com:your-github-user/ai-homelab-proxmox.git
+  argocd_repo_secret_name: ai-homelab-proxmox-repo
+  k3s_version: v1.32.11+k3s3
+  k3s_channel: stable
+  k3s_cluster_init: true
+  k3s_cluster_cidr: 10.42.0.0/16
+  k3s_service_cidr: 10.43.0.0/16
+  k3s_cluster_dns: 10.43.0.10
+  k3s_write_kubeconfig_mode: "0600"
+
+platform:
+  organization: AI Homelab
+  cluster_name: homelab-core
+  onepassword_vault: Homelab
+  management_domain: example.com
+  cluster_issuer_name: letsencrypt-cloudflare
+  argocd_hostname: argocd.example.com
+  homepage_hostname: core.example.com
+  home_assistant_hostname: ha.example.com
+  rancher_hostname: rancher.example.com
+  longhorn_hostname: longhorn.core.example.com
+  mealie_hostname: mealie.example.com
+  netbox_hostname: netbox.example.com
+  n8n_hostname: n8n.example.com
+  gatus_hostname: status.example.com
+  monitoring:
+    gatus:
+      operator_apps:
+        - name: Argo CD
+          hostname_key: argocd_hostname
+          url: http://argocd-server.argocd.svc.cluster.local/api/version
+        - name: Homepage
+          hostname_key: homepage_hostname
+          url: http://homepage.homepage.svc.cluster.local:3000
+        - name: Home Assistant
+          hostname_key: home_assistant_hostname
+          url: https://{home_assistant_hostname}/
+        - name: Longhorn
+          hostname_key: longhorn_hostname
+          url: https://{longhorn_hostname}/
+        - name: Mealie
+          hostname_key: mealie_hostname
+          url: https://{mealie_hostname}/
+        - name: NetBox
+          hostname_key: netbox_hostname
+          url: https://{netbox_hostname}/
+        - name: n8n
+          hostname_key: n8n_hostname
+          url: http://n8n.n8n.svc.cluster.local:5678/healthz
+      platform_dependencies:
+        - name: Velero
+          url: http://velero.velero.svc.cluster.local:8085/metrics
+        - name: Rancher
+          url: https://{rancher_hostname}/
+        - name: PBS-0
+          url: https://pbs-0.example.com:8007/
+          insecure: true
+  telemetry:
+    prometheus_remote_write_url: https://prometheus.ops.example.com/api/v1/write
+    loki_push_url: https://loki.ops.example.com/loki/api/v1/push
+  secrets:
+    cloudflare_api_token_key: homelab-core-cloudflare-api/credential
+    renovate_github_token_key: homelab-core-github-pat-renovate/credential
+    velero_key_id_key: homelab-core-backblaze-velero-key/key id
+    velero_application_key_key: homelab-core-backblaze-velero-key/credential
+    homepage_argocd_key: homelab-core-homepage-argocd/credential
+    postgresql_admin_password_key: homelab-core-postgresql/password
+    redis_password_key: homelab-core-redis/password
+    netbox_secret_key: homelab-core-netbox/secret key
+    netbox_superuser_password_key: homelab-core-netbox/superuser password
+    netbox_db_password_key: homelab-core-netbox/db password
+    netbox_api_token_pepper_key: homelab-core-netbox/api token pepper
+
+ops:
+  watchtower:
+    enabled: true
+    tailscale_target: pve-0
+    prometheus_job_name: proxmox-homelab
+    node_exporter_port: 9100
+    gatus_endpoints:
+      - name: PVE SSH
+        url: tcp://{tailscale_target}:22
+      - name: PVE HTTPS
+        url: https://{tailscale_target}:8006
+        insecure: true
+      - name: PVE Node Exporter
+        url: http://{tailscale_target}:9100/metrics
+      - name: NAS-A
+        url: http://nas-a.example.com:8480
+      - name: NAS-B
+        url: http://nas-b.example.com:8480
+
+backup:
+  target:
+    enabled: true
+    storage_id: pbs-0
+    server: 192.0.2.54
+    port: 8007
+    datastore: datastore0
+    namespace: homelab
+    content_types:
+      - backup
+    shared: true
+    retention_owner: pbs
+  job:
+    id: pbs-0-homelab-nightly
+    enabled: true
+    all: true
+    schedule: "02:00"
+    mode: snapshot
+    pbs_change_detection_mode: metadata
+    notification_mode: auto
+    notes_template: homelab-nightly-backup
+    comment: Nightly guest backups from the primary Proxmox node to PBS.
+    exclude: ""
+    remove: false
+
+network:
+  management_bridge: vmbr0
+  management_cidr: 192.0.2.0/24
+  management_gateway: 192.0.2.1
+  management_dns_servers:
+    - 192.0.2.1
+
+storage:
+  root:
+    install_target: 1 TB SSD
+    local_storage_id: local
+    local_lvm_storage_id: local-zfs
+  vmdata:
+    device: /dev/disk/by-id/replace-with-your-workload-disk
+    filesystem_type: zfs
+    pool_name: nvme-fast
+    storage_id: nvme-fast
+    content_types:
+      - images
+      - rootdir
+    compression: lz4
+    autotrim: true
+    scrub_schedule: monthly
+    wipe_signatures: false
+
+cluster:
+  template:
+    vm_id: 600
+    name: ubuntu-2404-cloudimg-amd64-template
+    image_url: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+    image_file_name: noble-server-cloudimg-amd64.qcow2
+    disk_gb: 20
+  nodes:
+    homelab-core-server-0:
+      vm_id: 610
+      role: server
+      management_address: 192.0.2.61
+      management_cidr: 192.0.2.61/24
+      cpu_cores: 4
+      memory_mb: 16384
+      disk_gb: 160
+      inventory_groups:
+        - k3s
+        - k3s_server
+    homelab-core-worker-0:
+      vm_id: 611
+      role: agent
+      management_address: 192.0.2.62
+      management_cidr: 192.0.2.62/24
+      cpu_cores: 4
+      memory_mb: 16384
+      disk_gb: 200
+      inventory_groups:
+        - k3s
+        - k3s_agents
+    homelab-core-worker-1:
+      vm_id: 612
+      role: agent
+      management_address: 192.0.2.63
+      management_cidr: 192.0.2.63/24
+      cpu_cores: 4
+      memory_mb: 16384
+      disk_gb: 200
+      inventory_groups:
+        - k3s
+        - k3s_agents
+  ingress:
+    metallb_addresses:
+      - 192.0.2.90-192.0.2.99
+
+home_assistant:
+  name: vm-home-assistant
+  vm_id: 100
+  management_address: 192.0.2.51
+  management_cidr: 192.0.2.51/24
+  mac_address: "02:AA:BB:CC:00:51"
+  cpu_cores: 2
+  memory_mb: 8192
+  disk_gb: 100
+  datastore_id: nvme-fast
+  start_on_boot: true
+  tags:
+    - ha
+    - homelab
+    - home-automation
+    - example
+    - terraform
+  description: |-
+    Example Home Assistant appliance managed by Terraform.
+    Replace the VM name, MAC, and capacity values to match your environment.
+
+gateways:
+  defaults:
+    cpu_cores: 4
+    memory_mb: 16384
+    disk_gb: 32
+    start_on_boot: true
+    install_tailscale: true
+    inventory_groups:
+      - openclaw_gateways
+  instances:
+    alpha:
+      vm_id: 620
+      management_address: 192.0.2.64
+      mac_address: "02:AA:BB:CC:00:64"
+      caddy:
+        enabled: true
+        hostname: gw.alpha.example.com
+        upstream: 127.0.0.1:18789
+    beta:
+      vm_id: 621
+      management_address: 192.0.2.65
+      mac_address: "02:AA:BB:CC:00:65"
+      caddy:
+        enabled: true
+        hostname: gw.beta.example.com
+        upstream: 127.0.0.1:18789
+    gamma:
+      vm_id: 622
+      management_address: 192.0.2.67
+      mac_address: "02:AA:BB:CC:00:67"
+      caddy:
+        enabled: true
+        hostname: gw.gamma.example.com
+        upstream: 127.0.0.1:18789
+
+containers:
+  pve-0-edge:
+    ct_id: 200
+    role: tailscale-appliance
+    management_address: 192.0.2.70
+    management_cidr: 192.0.2.70/24
+    tailscale_hostname: pve-0-edge
+    template:
+      url: "http://download.proxmox.com/images/system/debian-12-standard_12.12-1_amd64.tar.zst"
+      file_name: "debian-12-standard_12.12-1_amd64.tar.zst"
+    cpu_cores: 1
+    memory_mb: 512
+    swap_mb: 256
+    disk_gb: 4
+    unprivileged: true
+    features:
+      nesting: true
+    start_on_boot: true
+    tailscale:
+      advertise_exit_node: true
+      advertise_routes:
+        - "192.168.0.0/16"
+      accept_routes: true
+      accept_dns: false
+      ssh: false
+    inventory_groups:
+      - containers
+      - tailscale_appliances
+
+hosts:
+  pve-0:
+    node_name: pve-0
+    management_address: 192.0.2.50
+    management_cidr: 192.0.2.50/24
+    bootstrap_user: root
+    tailscale_hostname: pve-0
+    management_interface: enp1s0
+    management_interface_tuning:
+      disable_eee: false
+      pcie_aspm_off: false
+      watchdog_enabled: false
+      watchdog_interval_seconds: 30
+      watchdog_cooldown_seconds: 300
+      watchdog_max_resets_per_hour: 6
+    inventory_groups:
+      - proxmox
+      - foundation
+    hardware:
+      cpu_model: Example x86_64 host
+      memory_gb: 64
+      boot_disk: 512 GB SSD
+      guest_disk: 2 TB NVMe

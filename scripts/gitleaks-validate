@@ -1,0 +1,25 @@
+#!/bin/bash
+set -euo pipefail
+
+GITLEAKS_BIN="${GITLEAKS_BIN:-gitleaks}"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/homelab-pve-gitleaks.XXXXXX")"
+
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT INT TERM
+
+git -C "$REPO_ROOT" ls-files -z | while IFS= read -r -d '' path; do
+  if [[ ! -e "$REPO_ROOT/$path" ]]; then
+    continue
+  fi
+  mkdir -p "$TMP_DIR/$(dirname "$path")"
+  cp -p "$REPO_ROOT/$path" "$TMP_DIR/$path"
+done
+
+if [[ -f "$REPO_ROOT/.gitleaks.toml" ]]; then
+  exec "$GITLEAKS_BIN" dir "$TMP_DIR" --config "$REPO_ROOT/.gitleaks.toml" --redact
+fi
+
+exec "$GITLEAKS_BIN" dir "$TMP_DIR" --redact

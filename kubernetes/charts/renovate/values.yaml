@@ -1,0 +1,30 @@
+cronjob:
+  schedule: "0 0 * * *"
+  timeZone: America/Chicago
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 1
+  ttlSecondsAfterFinished: 86400
+
+renovate:
+  config: |
+    {
+      "platform": "github",
+      "repositories": ["your-github-user/ai-homelab-proxmox"],
+      "autodiscover": false,
+      "onboarding": false,
+      "requireConfig": "required"
+    }
+
+existingSecret: renovate-env
+
+env:
+  RENOVATE_GIT_AUTHOR: Renovate <269546522+qb4ohpzv@users.noreply.github.com>
+  RENOVATE_NODE_ARGS: --max-old-space-size=1536
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 2Gi

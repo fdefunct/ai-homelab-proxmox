@@ -1,0 +1,103 @@
+# Declarative GitHub label definitions.
+# Applied to the repository by .github/workflows/label-sync.yml on push to main.
+
+# ---------------------------------------------------------------------------
+# Area labels — which ownership layer does this PR touch?
+# ---------------------------------------------------------------------------
+- name: area/config
+  color: "0075ca"
+  description: "config/ — environment topology"
+
+- name: area/ansible
+  color: "e4e669"
+  description: "ansible/ — host bootstrap and k3s installation"
+
+- name: area/github
+  color: "010409"
+  description: ".github/ — workflows and repository configuration"
+
+- name: area/renovate
+  color: "006b75"
+  description: ".renovate/ — dependency policy and grouping"
+
+- name: area/kubernetes
+  color: "3371e3"
+  description: "kubernetes/ — GitOps / Argo CD desired state"
+
+- name: area/scripts
+  color: "5319e7"
+  description: "scripts/ — operator automation"
+
+- name: area/terraform
+  color: "7b42bc"
+  description: "terraform/ — Proxmox infrastructure"
+
+- name: area/docs
+  color: "0052cc"
+  description: "docs/ — runbooks and documentation"
+
+# ---------------------------------------------------------------------------
+# Type labels — semantic versioning / change classification
+# ---------------------------------------------------------------------------
+- name: type/digest
+  color: "006b75"
+  description: "Digest / hash-pinned image update"
+
+- name: type/patch
+  color: "0e8a16"
+  description: "Patch-level dependency update"
+
+- name: type/minor
+  color: "fbca04"
+  description: "Minor-level dependency update"
+
+- name: type/major
+  color: "d93f0b"
+  description: "Major-level dependency update"
+
+- name: type/break
+  color: "b60205"
+  description: "Breaking change"
+
+# ---------------------------------------------------------------------------
+# General labels
+# ---------------------------------------------------------------------------
+- name: bug
+  color: "d73a4a"
+  description: "Something isn't working"
+
+- name: do-not-merge
+  color: "b60205"
+  description: "Hold — do not merge this PR"
+
+- name: documentation
+  color: "0075ca"
+  description: "Improvements or additions to documentation"
+
+- name: duplicate
+  color: "cfd3d7"
+  description: "This issue or pull request already exists"
+
+- name: enhancement
+  color: "a2eeef"
+  description: "New feature or request"
+
+- name: help wanted
+  color: "008672"
+  description: "Extra attention is needed"
+
+- name: invalid
+  color: "e4e669"
+  description: "This doesn't seem right"
+
+- name: question
+  color: "d876e3"
+  description: "Further information is requested"
+
+- name: renovate
+  color: "006b75"
+  description: "Automated dependency update from Renovate"
+
+- name: wontfix
+  color: "ffffff"
+  description: "This will not be worked on"

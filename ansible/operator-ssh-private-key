@@ -1,0 +1,4 @@
+# Runtime-injected private key for steady-state guest access.
+# Render with `op read $(cat ansible/operator-ssh-private-key)`.
+
+op://Homelab/homelab-ops/private key

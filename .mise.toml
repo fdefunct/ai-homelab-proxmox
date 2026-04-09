@@ -1,0 +1,8 @@
+[env]
+ENV_NAME = "home"
+
+[tools]
+node = "22"
+python = "3.12"
+terraform = "1.14.8"
+tflint = "0.61.0"

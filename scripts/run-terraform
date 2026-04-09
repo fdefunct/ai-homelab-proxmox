@@ -1,0 +1,39 @@
+#!/bin/bash
+set -euo pipefail
+
+TF_CMD="$1"
+shift || true
+ENV_NAME="${ENV_NAME:-home}"
+TF_ENV_DIR="terraform/envs/$ENV_NAME"
+
+TMP_SECRETS="$(mktemp /tmp/homelab-pve-terraform-secrets.XXXXXX)"
+
+if [ ! -f Makefile ]; then
+  printf 'Run this script from the repository root.\n' >&2
+  exit 1
+fi
+
+cleanup() {
+  rm -f "$TMP_SECRETS"
+}
+trap cleanup EXIT INT TERM
+
+if [ ! -f "$TF_ENV_DIR/generated.auto.tfvars.json" ]; then
+  printf "Missing %s/generated.auto.tfvars.json. Run 'make ENV=%s generate-config' first.\n" "$TF_ENV_DIR" "$ENV_NAME" >&2
+  exit 1
+fi
+
+./scripts/render-terraform-secrets > "$TMP_SECRETS"
+./scripts/assert-rendered-secrets "$TMP_SECRETS" "Rendered Terraform variables"
+
+if [ "${BOOTSTRAP_PROXMOX_INSECURE:-0}" = "1" ]; then
+  printf 'WARNING: using the Day 0-only insecure TLS override for Proxmox API access.\n' >&2
+  printf "Trust the steady-state Proxmox CA with 'make ENV=%s trust-proxmox-ca' and rerun without BOOTSTRAP_PROXMOX_INSECURE=1.\n" "$ENV_NAME" >&2
+  BOOTSTRAP_TLS_ARG='-var=proxmox_insecure=true'
+fi
+
+if [ -n "${BOOTSTRAP_TLS_ARG:-}" ]; then
+  exec terraform -chdir="$TF_ENV_DIR" "$TF_CMD" -var-file="$TMP_SECRETS" "$BOOTSTRAP_TLS_ARG" "$@"
+fi
+
+exec terraform -chdir="$TF_ENV_DIR" "$TF_CMD" -var-file="$TMP_SECRETS" "$@"

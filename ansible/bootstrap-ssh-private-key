@@ -1,0 +1,4 @@
+# Runtime-injected private key for the Day 0 bootstrap SSH identity.
+# Render with `op read $(cat ansible/bootstrap-ssh-private-key)`.
+
+op://Homelab/pve-0-bootstrap/private key

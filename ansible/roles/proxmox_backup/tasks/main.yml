@@ -1,0 +1,317 @@
+- name: Read current PBS storages
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - get
+      - /storage
+      - --type
+      - pbs
+      - --output-format
+      - json
+  register: pve_pbs_storages_raw
+  changed_when: false
+  check_mode: false
+
+- name: Parse current PBS storages
+  ansible.builtin.set_fact:
+    pve_pbs_storages: "{{ pve_pbs_storages_raw.stdout | from_json }}"
+
+- name: Read current PBS storage config when present
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - get
+      - "/storage/{{ backup_storage_id }}"
+      - --output-format
+      - json
+  register: pve_pbs_storage_raw
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  when: backup_target_enabled
+
+- name: Parse current PBS storage config
+  ansible.builtin.set_fact:
+    pve_pbs_storage: "{{ (pve_pbs_storage_raw.stdout | default('{}', true)) | from_json }}"
+  when:
+    - backup_target_enabled
+    - pve_pbs_storage_raw.rc == 0
+
+- name: Check current PBS storage secret file
+  ansible.builtin.stat:
+    path: "/etc/pve/priv/storage/{{ backup_storage_id }}.pw"
+  register: pve_pbs_storage_secret_stat
+  when: backup_target_enabled
+
+- name: Read current PBS storage secret file
+  ansible.builtin.slurp:
+    path: "/etc/pve/priv/storage/{{ backup_storage_id }}.pw"
+  register: pve_pbs_storage_secret_raw
+  when:
+    - backup_target_enabled
+    - pve_pbs_storage_secret_stat.stat.exists
+
+- name: Create missing PBS storage on Proxmox
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - create
+      - /storage
+      - --storage
+      - "{{ backup_storage_id }}"
+      - --type
+      - pbs
+      - --server
+      - "{{ backup_server }}"
+      - --port
+      - "{{ backup_port | string }}"
+      - --datastore
+      - "{{ backup_datastore }}"
+      - --namespace
+      - "{{ backup_namespace }}"
+      - --content
+      - "{{ backup_content_types | join(',') }}"
+      - --fingerprint
+      - "{{ pbs_backup_fingerprint }}"
+      - --username
+      - "{{ pbs_backup_auth_id }}"
+      - --password
+      - "{{ pbs_backup_token_secret }}"
+  changed_when: true
+  when:
+    - backup_target_enabled
+    - (pve_pbs_storages | selectattr('storage', 'equalto', backup_storage_id) | list | length) == 0
+  no_log: true
+
+- name: Update existing PBS storage on Proxmox when non-secret settings drift
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - set
+      - "/storage/{{ backup_storage_id }}"
+      - --server
+      - "{{ backup_server }}"
+      - --port
+      - "{{ backup_port | string }}"
+      - --datastore
+      - "{{ backup_datastore }}"
+      - --namespace
+      - "{{ backup_namespace }}"
+      - --content
+      - "{{ backup_content_types | join(',') }}"
+      - --fingerprint
+      - "{{ pbs_backup_fingerprint }}"
+      - --username
+      - "{{ pbs_backup_auth_id }}"
+  changed_when: true
+  when:
+    - backup_target_enabled
+    - pve_pbs_storage_raw.rc == 0
+    - (pve_pbs_storage.server | default('')) != backup_server or (pve_pbs_storage.port | default(8007) | int) != (backup_port | int) or (pve_pbs_storage.datastore | default('')) != backup_datastore or (pve_pbs_storage.namespace | default('')) != backup_namespace or (pve_pbs_storage.content | default('')) != (backup_content_types | join(',')) or (pve_pbs_storage.fingerprint | default('')) != pbs_backup_fingerprint or (pve_pbs_storage.username | default('')) != pbs_backup_auth_id
+
+- name: Persist PBS storage secret
+  ansible.builtin.copy:
+    dest: "/etc/pve/priv/storage/{{ backup_storage_id }}.pw"
+    owner: root
+    group: www-data
+    mode: "0600"
+    content: "{{ pbs_backup_token_secret }}\n"
+  when:
+    - backup_target_enabled
+    - not pve_pbs_storage_secret_stat.stat.exists or (pve_pbs_storage_secret_raw.content | b64decode | trim) != pbs_backup_token_secret
+  no_log: true
+
+- name: Read current Proxmox backup jobs
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - get
+      - /cluster/backup
+      - --output-format
+      - json
+  register: pve_backup_jobs_raw
+  changed_when: false
+  check_mode: false
+  when: backup_target_enabled
+
+- name: Parse current Proxmox backup jobs
+  ansible.builtin.set_fact:
+    pve_backup_jobs: "{{ pve_backup_jobs_raw.stdout | from_json }}"
+  when: backup_target_enabled
+
+- name: Create nightly PBS backup job
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - create
+      - /cluster/backup
+      - --id
+      - "{{ backup_job_id }}"
+      - --storage
+      - "{{ backup_storage_id }}"
+      - --enabled
+      - "{{ backup_job_enabled | ternary('1', '0') }}"
+      - --all
+      - "{{ backup_job_all | ternary('1', '0') }}"
+      - --schedule
+      - "{{ backup_job_schedule }}"
+      - --mode
+      - "{{ backup_job_mode }}"
+      - --notification-mode
+      - "{{ backup_job_notification_mode }}"
+      - --pbs-change-detection-mode
+      - "{{ backup_job_pbs_change_detection_mode }}"
+      - --notes-template
+      - "{{ backup_job_notes_template }}"
+      - --comment
+      - "{{ backup_job_comment }}"
+      - --remove
+      - "{{ backup_job_remove | ternary('1', '0') }}"
+      - --exclude
+      - "{{ backup_job_exclude }}"
+  changed_when: true
+  when:
+    - backup_target_enabled
+    - (pve_backup_jobs | selectattr('id', 'equalto', backup_job_id) | list | length) == 0
+
+- name: Reconcile nightly PBS backup job
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - set
+      - "/cluster/backup/{{ backup_job_id }}"
+      - --storage
+      - "{{ backup_storage_id }}"
+      - --enabled
+      - "{{ backup_job_enabled | ternary('1', '0') }}"
+      - --all
+      - "{{ backup_job_all | ternary('1', '0') }}"
+      - --schedule
+      - "{{ backup_job_schedule }}"
+      - --mode
+      - "{{ backup_job_mode }}"
+      - --notification-mode
+      - "{{ backup_job_notification_mode }}"
+      - --pbs-change-detection-mode
+      - "{{ backup_job_pbs_change_detection_mode }}"
+      - --notes-template
+      - "{{ backup_job_notes_template }}"
+      - --comment
+      - "{{ backup_job_comment }}"
+      - --remove
+      - "{{ backup_job_remove | ternary('1', '0') }}"
+      - --exclude
+      - "{{ backup_job_exclude }}"
+      - --delete
+      - vmid
+  changed_when: true
+  when: >-
+    backup_target_enabled and (
+      (
+        (
+          pve_backup_jobs
+          | selectattr('id', 'equalto', backup_job_id)
+          | list
+          | first
+        ).storage | default('')
+      ) != backup_storage_id
+      or
+      (
+        (
+          pve_backup_jobs
+          | selectattr('id', 'equalto', backup_job_id)
+          | list
+          | first
+        ).enabled | default(1) | string
+      ) != (backup_job_enabled | ternary('1', '0'))
+      or
+      (
+        (
+          pve_backup_jobs
+          | selectattr('id', 'equalto', backup_job_id)
+          | list
+          | first
+        ).all | default(0) | string
+      ) != (backup_job_all | ternary('1', '0'))
+      or
+      (
+        (
+          pve_backup_jobs
+          | selectattr('id', 'equalto', backup_job_id)
+          | list
+          | first
+        ).schedule | default('')
+      ) != backup_job_schedule
+      or
+      (
+        (
+          pve_backup_jobs
+          | selectattr('id', 'equalto', backup_job_id)
+          | list
+          | first
+        ).mode | default('')
+      ) != backup_job_mode
+      or
+      (
+        (
+          pve_backup_jobs
+          | selectattr('id', 'equalto', backup_job_id)
+          | list
+          | first
+        )['notification-mode'] | default('')
+      ) != backup_job_notification_mode
+      or
+      (
+        (
+          pve_backup_jobs
+          | selectattr('id', 'equalto', backup_job_id)
+          | list
+          | first
+        )['pbs-change-detection-mode'] | default('')
+      ) != backup_job_pbs_change_detection_mode
+      or
+      (
+        (
+          pve_backup_jobs
+          | selectattr('id', 'equalto', backup_job_id)
+          | list
+          | first
+        )['notes-template'] | default('')
+      ) != backup_job_notes_template
+      or
+      (
+        (
+          pve_backup_jobs
+          | selectattr('id', 'equalto', backup_job_id)
+          | list
+          | first
+        ).comment | default('')
+      ) != backup_job_comment
+      or
+      (
+        (
+          pve_backup_jobs
+          | selectattr('id', 'equalto', backup_job_id)
+          | list
+          | first
+        ).exclude | default('')
+      ) != backup_job_exclude
+      or
+      (
+        (
+          pve_backup_jobs
+          | selectattr('id', 'equalto', backup_job_id)
+          | list
+          | first
+        ).remove | default(1) | string
+      ) != (backup_job_remove | ternary('1', '0'))
+      or
+      (
+        (
+          pve_backup_jobs
+          | selectattr('id', 'equalto', backup_job_id)
+          | list
+          | first
+        ).vmid is defined
+      )
+    )

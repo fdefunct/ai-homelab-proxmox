@@ -1,0 +1,9 @@
+[Unit]
+Description=Check {{ management_interface }} for e1000e hardware hangs
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/sys/class/net/{{ management_interface }}
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/management-nic-watchdog

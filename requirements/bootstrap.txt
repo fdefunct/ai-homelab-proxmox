@@ -1,0 +1,8 @@
+ansible-core==2.18.14
+ansible-lint==24.12.2
+checkov==3.2.513
+google-yamlfmt==0.21.0
+json5==0.14.0
+jsonschema==4.26.0
+PyYAML==6.0.3
+yamllint==1.38.0

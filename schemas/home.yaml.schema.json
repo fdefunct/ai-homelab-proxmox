@@ -1,0 +1,766 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ai-homelab-proxmox environment configuration",
+  "description": "Schema for config/home.yaml — the canonical environment topology source of truth.",
+  "type": "object",
+  "required": [
+    "environment",
+    "terraform",
+    "ansible",
+    "platform",
+    "ops",
+    "backup",
+    "network",
+    "storage",
+    "cluster",
+    "home_assistant",
+    "gateways",
+    "containers",
+    "hosts"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "environment": {
+      "type": "string",
+      "description": "Environment name (e.g. home)"
+    },
+    "terraform": {
+      "type": "object",
+      "required": [
+        "endpoint",
+        "insecure",
+        "node_name",
+        "pool_id",
+        "vm_disk_storage",
+        "iso_storage",
+        "snippet_storage",
+        "template_storage"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": { "type": "string", "format": "uri" },
+        "insecure": { "type": "boolean" },
+        "node_name": { "type": "string" },
+        "pool_id": { "type": "string" },
+        "vm_disk_storage": { "type": "string" },
+        "iso_storage": { "type": "string" },
+        "snippet_storage": { "type": "string" },
+        "template_storage": { "type": "string" }
+      }
+    },
+    "ansible": {
+      "type": "object",
+      "required": [
+        "bootstrap_group",
+        "k3s_server_group",
+        "k3s_agent_group",
+        "operator_user",
+        "timezone",
+        "locale",
+        "manage_no_subscription_repo",
+        "enable_enterprise_repo",
+        "install_tailscale",
+        "tailscale_ssh",
+        "tailscale_accept_routes",
+        "tailscale_accept_dns",
+        "tailscale_advertise_exit_node",
+        "tailscale_advertise_routes",
+        "configure_iommu",
+        "remove_os_prober",
+        "datacenter_firewall_enabled",
+        "datacenter_firewall_input_policy",
+        "datacenter_firewall_output_policy",
+        "node_firewall_enabled",
+        "argocd_repo_url",
+        "argocd_repo_secret_name",
+        "k3s_version",
+        "k3s_channel",
+        "k3s_cluster_init",
+        "k3s_cluster_cidr",
+        "k3s_service_cidr",
+        "k3s_cluster_dns",
+        "k3s_write_kubeconfig_mode"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "bootstrap_group": { "type": "string" },
+        "k3s_server_group": { "type": "string" },
+        "k3s_agent_group": { "type": "string" },
+        "operator_user": { "type": "string" },
+        "timezone": { "type": "string" },
+        "locale": { "type": "string" },
+        "manage_no_subscription_repo": { "type": "boolean" },
+        "enable_enterprise_repo": { "type": "boolean" },
+        "install_tailscale": { "type": "boolean" },
+        "tailscale_ssh": { "type": "boolean" },
+        "tailscale_accept_routes": { "type": "boolean" },
+        "tailscale_accept_dns": { "type": "boolean" },
+        "tailscale_advertise_exit_node": { "type": "boolean" },
+        "tailscale_advertise_routes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "configure_iommu": { "type": "boolean" },
+        "remove_os_prober": { "type": "boolean" },
+        "datacenter_firewall_enabled": { "type": "boolean" },
+        "datacenter_firewall_input_policy": {
+          "type": "string",
+          "enum": ["ACCEPT", "DROP", "REJECT"]
+        },
+        "datacenter_firewall_output_policy": {
+          "type": "string",
+          "enum": ["ACCEPT", "DROP", "REJECT"]
+        },
+        "node_firewall_enabled": { "type": "boolean" },
+        "argocd_repo_url": {
+          "type": "string",
+          "pattern": "^(git@github\\.com:|https://github\\.com/)"
+        },
+        "argocd_repo_secret_name": { "type": "string" },
+        "k3s_version": {
+          "type": "string",
+          "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+"
+        },
+        "k3s_channel": { "type": "string" },
+        "k3s_cluster_init": { "type": "boolean" },
+        "k3s_cluster_cidr": { "type": "string" },
+        "k3s_service_cidr": { "type": "string" },
+        "k3s_cluster_dns": { "type": "string" },
+        "k3s_write_kubeconfig_mode": { "type": "string" }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "required": [
+        "organization",
+        "cluster_name",
+        "onepassword_vault",
+        "management_domain",
+        "cluster_issuer_name",
+        "argocd_hostname",
+        "homepage_hostname",
+        "home_assistant_hostname",
+        "rancher_hostname",
+        "longhorn_hostname",
+        "mealie_hostname",
+        "netbox_hostname",
+        "n8n_hostname",
+        "gatus_hostname",
+        "monitoring",
+        "telemetry",
+        "secrets"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "organization": { "type": "string" },
+        "cluster_name": { "type": "string" },
+        "onepassword_vault": { "type": "string" },
+        "management_domain": { "type": "string" },
+        "cluster_issuer_name": { "type": "string" },
+        "argocd_hostname": { "type": "string" },
+        "homepage_hostname": { "type": "string" },
+        "home_assistant_hostname": { "type": "string" },
+        "rancher_hostname": { "type": "string" },
+        "longhorn_hostname": { "type": "string" },
+        "mealie_hostname": { "type": "string" },
+        "netbox_hostname": { "type": "string" },
+        "n8n_hostname": { "type": "string" },
+        "gatus_hostname": { "type": "string" },
+        "monitoring": {
+          "type": "object",
+          "required": ["gatus"],
+          "additionalProperties": false,
+          "properties": {
+            "gatus": {
+              "type": "object",
+              "required": ["operator_apps", "platform_dependencies"],
+              "additionalProperties": false,
+              "properties": {
+                "operator_apps": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "hostname_key", "url"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": { "type": "string" },
+                      "hostname_key": { "type": "string" },
+                      "url": { "type": "string" },
+                      "insecure": { "type": "boolean" }
+                    }
+                  }
+                },
+                "platform_dependencies": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "url"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": { "type": "string" },
+                      "url": { "type": "string" },
+                      "insecure": { "type": "boolean" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "telemetry": {
+          "type": "object",
+          "required": ["prometheus_remote_write_url", "loki_push_url"],
+          "additionalProperties": false,
+          "properties": {
+            "prometheus_remote_write_url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "loki_push_url": { "type": "string", "format": "uri" }
+          }
+        },
+        "secrets": {
+          "type": "object",
+          "required": [
+            "cloudflare_api_token_key",
+            "renovate_github_token_key",
+            "velero_key_id_key",
+            "velero_application_key_key",
+            "homepage_argocd_key",
+            "postgresql_admin_password_key",
+            "redis_password_key",
+            "netbox_secret_key",
+            "netbox_superuser_password_key",
+            "netbox_db_password_key",
+            "netbox_api_token_pepper_key"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "cloudflare_api_token_key": { "type": "string" },
+            "renovate_github_token_key": { "type": "string" },
+            "velero_key_id_key": { "type": "string" },
+            "velero_application_key_key": { "type": "string" },
+            "homepage_argocd_key": { "type": "string" },
+            "postgresql_admin_password_key": { "type": "string" },
+            "redis_password_key": { "type": "string" },
+            "netbox_secret_key": { "type": "string" },
+            "netbox_superuser_password_key": { "type": "string" },
+            "netbox_db_password_key": { "type": "string" },
+            "netbox_api_token_pepper_key": { "type": "string" }
+          }
+        }
+      }
+    },
+    "ops": {
+      "type": "object",
+      "required": ["watchtower"],
+      "additionalProperties": false,
+      "properties": {
+        "watchtower": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "tailscale_target",
+            "prometheus_job_name",
+            "node_exporter_port",
+            "gatus_endpoints"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "tailscale_target": { "type": "string" },
+            "prometheus_job_name": { "type": "string" },
+            "node_exporter_port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "gatus_endpoints": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["name", "url"],
+                "additionalProperties": false,
+                "properties": {
+                  "name": { "type": "string" },
+                  "url": { "type": "string" },
+                  "insecure": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "backup": {
+      "type": "object",
+      "required": ["target", "job"],
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "storage_id",
+            "server",
+            "port",
+            "datastore",
+            "namespace",
+            "content_types",
+            "shared",
+            "retention_owner"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "storage_id": { "type": "string" },
+            "server": { "type": "string" },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "datastore": { "type": "string" },
+            "namespace": { "type": "string" },
+            "content_types": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "enum": ["backup"] }
+            },
+            "shared": { "type": "boolean" },
+            "retention_owner": { "type": "string" }
+          }
+        },
+        "job": {
+          "type": "object",
+          "required": [
+            "id",
+            "enabled",
+            "all",
+            "schedule",
+            "mode",
+            "pbs_change_detection_mode",
+            "notification_mode",
+            "notes_template",
+            "comment",
+            "exclude",
+            "remove"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "type": "string" },
+            "enabled": { "type": "boolean" },
+            "all": { "type": "boolean" },
+            "schedule": { "type": "string" },
+            "mode": {
+              "type": "string",
+              "enum": ["snapshot", "suspend", "stop"]
+            },
+            "pbs_change_detection_mode": {
+              "type": "string",
+              "enum": ["data", "legacy", "metadata"]
+            },
+            "notification_mode": {
+              "type": "string",
+              "enum": ["auto", "legacy-sendmail", "notification-system"]
+            },
+            "notes_template": { "type": "string" },
+            "comment": { "type": "string" },
+            "exclude": { "type": "string" },
+            "remove": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "required": [
+        "management_bridge",
+        "management_cidr",
+        "management_gateway",
+        "management_dns_servers"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "management_bridge": { "type": "string" },
+        "management_cidr": { "type": "string" },
+        "management_gateway": { "type": "string" },
+        "management_dns_servers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "required": ["root", "vmdata"],
+      "additionalProperties": false,
+      "properties": {
+        "root": {
+          "type": "object",
+          "required": [
+            "install_target",
+            "local_storage_id",
+            "local_lvm_storage_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "install_target": { "type": "string" },
+            "local_storage_id": { "type": "string" },
+            "local_lvm_storage_id": { "type": "string" }
+          }
+        },
+        "vmdata": {
+          "type": "object",
+          "required": [
+            "device",
+            "filesystem_type",
+            "pool_name",
+            "storage_id",
+            "content_types",
+            "compression",
+            "autotrim",
+            "scrub_schedule",
+            "wipe_signatures"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "device": { "type": "string" },
+            "filesystem_type": {
+              "type": "string",
+              "enum": ["zfs"]
+            },
+            "pool_name": { "type": "string" },
+            "storage_id": { "type": "string" },
+            "content_types": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "enum": ["images", "rootdir"] }
+            },
+            "compression": { "type": "string" },
+            "autotrim": { "type": "boolean" },
+            "scrub_schedule": {
+              "type": "string",
+              "enum": ["weekly", "monthly"]
+            },
+            "wipe_signatures": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "required": ["template", "nodes", "ingress"],
+      "additionalProperties": false,
+      "properties": {
+        "template": {
+          "type": "object",
+          "required": [
+            "vm_id",
+            "name",
+            "image_url",
+            "image_file_name",
+            "disk_gb"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "vm_id": { "type": "integer" },
+            "name": { "type": "string" },
+            "image_url": { "type": "string", "format": "uri" },
+            "image_file_name": { "type": "string" },
+            "disk_gb": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "nodes": {
+          "type": "object",
+          "description": "Map of node name → node spec",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "vm_id",
+              "role",
+              "management_address",
+              "management_cidr",
+              "cpu_cores",
+              "memory_mb",
+              "disk_gb",
+              "inventory_groups"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "vm_id": { "type": "integer" },
+              "role": { "type": "string", "enum": ["server", "agent"] },
+              "management_address": { "type": "string" },
+              "management_cidr": { "type": "string" },
+              "cpu_cores": { "type": "integer", "minimum": 1 },
+              "memory_mb": { "type": "integer", "minimum": 512 },
+              "disk_gb": { "type": "integer", "minimum": 1 },
+              "inventory_groups": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "type": "string" }
+              }
+            }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "required": ["metallb_addresses"],
+          "additionalProperties": false,
+          "properties": {
+            "metallb_addresses": {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1
+            }
+          }
+        }
+      }
+    },
+    "home_assistant": {
+      "type": "object",
+      "required": [
+        "name",
+        "vm_id",
+        "management_address",
+        "management_cidr",
+        "cpu_cores",
+        "memory_mb",
+        "disk_gb",
+        "mac_address",
+        "datastore_id",
+        "start_on_boot",
+        "tags",
+        "description"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "vm_id": { "type": "integer" },
+        "management_address": { "type": "string" },
+        "management_cidr": { "type": "string" },
+        "mac_address": { "type": "string" },
+        "cpu_cores": { "type": "integer", "minimum": 1 },
+        "memory_mb": { "type": "integer", "minimum": 512 },
+        "disk_gb": { "type": "integer", "minimum": 1 },
+        "datastore_id": { "type": "string" },
+        "start_on_boot": { "type": "boolean" },
+        "tags": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        },
+        "description": { "type": "string" }
+      }
+    },
+    "gateways": {
+      "type": "object",
+      "required": ["defaults", "instances"],
+      "additionalProperties": false,
+      "properties": {
+        "defaults": {
+          "type": "object",
+          "required": [
+            "cpu_cores",
+            "memory_mb",
+            "disk_gb",
+            "start_on_boot",
+            "install_tailscale",
+            "inventory_groups"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "cpu_cores": { "type": "integer", "minimum": 1 },
+            "memory_mb": { "type": "integer", "minimum": 512 },
+            "disk_gb": { "type": "integer", "minimum": 1 },
+            "start_on_boot": { "type": "boolean" },
+            "install_tailscale": { "type": "boolean" },
+            "inventory_groups": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "instances": {
+          "type": "object",
+          "description": "Map of gateway name → gateway spec",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["vm_id", "management_address", "mac_address"],
+            "additionalProperties": false,
+            "properties": {
+              "vm_id": { "type": "integer" },
+              "management_address": { "type": "string" },
+              "mac_address": { "type": "string" },
+              "cpu_cores": { "type": "integer", "minimum": 1 },
+              "memory_mb": { "type": "integer", "minimum": 512 },
+              "disk_gb": { "type": "integer", "minimum": 1 },
+              "start_on_boot": { "type": "boolean" },
+              "install_tailscale": { "type": "boolean" },
+              "inventory_groups": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "type": "string" }
+              },
+              "caddy": {
+                "type": "object",
+                "required": ["enabled"],
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": { "type": "boolean" },
+                  "hostname": { "type": "string" },
+                  "upstream": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "containers": {
+      "type": "object",
+      "description": "Map of container name → LXC spec",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "ct_id",
+          "role",
+          "management_address",
+          "management_cidr",
+          "tailscale_hostname",
+          "template",
+          "cpu_cores",
+          "memory_mb",
+          "swap_mb",
+          "disk_gb",
+          "unprivileged",
+          "features",
+          "start_on_boot",
+          "tailscale",
+          "inventory_groups"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ct_id": { "type": "integer" },
+          "role": { "type": "string" },
+          "management_address": { "type": "string" },
+          "management_cidr": { "type": "string" },
+          "tailscale_hostname": { "type": "string" },
+          "template": {
+            "type": "object",
+            "required": ["url", "file_name"],
+            "additionalProperties": false,
+            "properties": {
+              "url": { "type": "string", "format": "uri" },
+              "file_name": { "type": "string" }
+            }
+          },
+          "cpu_cores": { "type": "integer", "minimum": 1 },
+          "memory_mb": { "type": "integer", "minimum": 64 },
+          "swap_mb": { "type": "integer", "minimum": 0 },
+          "disk_gb": { "type": "integer", "minimum": 1 },
+          "unprivileged": { "type": "boolean" },
+          "features": {
+            "type": "object",
+            "required": ["nesting"],
+            "additionalProperties": false,
+            "properties": {
+              "nesting": { "type": "boolean" }
+            }
+          },
+          "start_on_boot": { "type": "boolean" },
+          "tailscale": {
+            "type": "object",
+            "required": [
+              "advertise_exit_node",
+              "advertise_routes",
+              "accept_routes",
+              "accept_dns",
+              "ssh"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "advertise_exit_node": { "type": "boolean" },
+              "advertise_routes": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "accept_routes": { "type": "boolean" },
+              "accept_dns": { "type": "boolean" },
+              "ssh": { "type": "boolean" }
+            }
+          },
+          "inventory_groups": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "hosts": {
+      "type": "object",
+      "description": "Map of hostname → host spec",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "node_name",
+          "management_address",
+          "management_cidr",
+          "bootstrap_user",
+          "tailscale_hostname",
+          "management_interface",
+          "inventory_groups",
+          "hardware"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "node_name": { "type": "string" },
+          "management_address": { "type": "string" },
+          "management_cidr": { "type": "string" },
+          "bootstrap_user": { "type": "string" },
+          "tailscale_hostname": { "type": "string" },
+          "management_interface": { "type": "string" },
+          "management_interface_tuning": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "disable_eee": { "type": "boolean" },
+              "pcie_aspm_off": { "type": "boolean" },
+              "watchdog_enabled": { "type": "boolean" },
+              "watchdog_interval_seconds": { "type": "integer", "minimum": 1 },
+              "watchdog_cooldown_seconds": { "type": "integer", "minimum": 1 },
+              "watchdog_max_resets_per_hour": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "inventory_groups": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string" }
+          },
+          "hardware": {
+            "type": "object",
+            "required": ["cpu_model", "memory_gb", "boot_disk", "guest_disk"],
+            "additionalProperties": false,
+            "properties": {
+              "cpu_model": { "type": "string" },
+              "memory_gb": { "type": "integer", "minimum": 1 },
+              "boot_disk": { "type": "string" },
+              "guest_disk": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

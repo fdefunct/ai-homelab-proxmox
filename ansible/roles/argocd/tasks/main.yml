@@ -1,0 +1,351 @@
+# This role is limited to the minimum Kubernetes bootstrap handoff:
+# install Argo CD, seed the admin password, seed the private repo credential,
+# and apply the root application. All persistent platform state belongs in kubernetes/.
+- name: Ensure Argo CD bootstrap manifest directory exists
+  ansible.builtin.file:
+    path: "{{ argocd_remote_manifest_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Check whether argocd namespace exists
+  ansible.builtin.command:
+    cmd: /usr/local/bin/k3s kubectl get namespace {{ argocd_namespace }}
+  register: argocd_namespace_result
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Ensure argocd namespace exists
+  ansible.builtin.command:
+    cmd: /usr/local/bin/k3s kubectl create namespace {{ argocd_namespace }}
+  changed_when: true
+  when: argocd_namespace_result.rc != 0
+
+- name: Compare the pinned Argo CD install manifest with the cached copy
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if [ ! -f "{{ argocd_remote_manifest_dir }}/install.yaml" ]; then
+      exit 1
+    fi
+    curl -fsSL "{{ argocd_install_manifest_url }}" | cmp -s - "{{ argocd_remote_manifest_dir }}/install.yaml"
+  args:
+    executable: /bin/bash
+  register: argocd_install_manifest_check
+  changed_when: false
+  failed_when: argocd_install_manifest_check.rc not in [0, 1]
+  check_mode: false
+
+- name: Download Argo CD install manifest
+  ansible.builtin.get_url:
+    url: "{{ argocd_install_manifest_url }}"
+    dest: "{{ argocd_remote_manifest_dir }}/install.yaml"
+    mode: "0644"
+  when: argocd_install_manifest_check.rc != 0
+
+- name: Read recorded Argo CD bootstrap version
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} get configmap {{ argocd_bootstrap_state_configmap }} -o jsonpath={.data.version}
+  register: argocd_bootstrap_version_result
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Determine whether Argo CD install apply is required
+  ansible.builtin.set_fact:
+    argocd_install_required: >-
+      {{ argocd_bootstrap_version_result.rc != 0 or
+         argocd_bootstrap_version_result.stdout != argocd_version }}
+
+- name: Install Argo CD from the official manifest
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl apply --server-side --force-conflicts -n {{ argocd_namespace }} -f {{ argocd_remote_manifest_dir }}/install.yaml
+  register: argocd_install_result
+  changed_when: >
+    'created' in argocd_install_result.stdout or 'configured' in argocd_install_result.stdout or 'serverside-applied' in argocd_install_result.stdout
+  when: argocd_install_required
+
+- name: Wait for Argo CD application controller rollout
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} rollout status statefulset/argocd-application-controller --timeout=300s
+  when: argocd_install_required
+  changed_when: false
+
+- name: Wait for Argo CD repo server readiness
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} rollout status deployment/argocd-repo-server --timeout=300s
+  when: argocd_install_required
+  changed_when: false
+
+- name: Wait for Argo CD server readiness
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} rollout status deployment/argocd-server --timeout=300s
+  when: argocd_install_required
+  changed_when: false
+
+- name: Record Argo CD bootstrap version
+  ansible.builtin.shell: >-
+    set -o pipefail && /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} create configmap {{ argocd_bootstrap_state_configmap }} --from-literal=version={{ argocd_version }} --dry-run=client -o yaml | /usr/local/bin/k3s kubectl apply -f -
+  args:
+    executable: /bin/bash
+  register: argocd_bootstrap_state_result
+  changed_when: >
+    'created' in argocd_bootstrap_state_result.stdout or 'configured' in argocd_bootstrap_state_result.stdout
+  when: argocd_install_required
+
+- name: Read current Argo CD insecure server setting
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} get configmap argocd-cmd-params-cm -o jsonpath={.data.server\\.insecure}
+  register: argocd_server_insecure_result
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Determine whether Argo CD insecure server setting update is required
+  ansible.builtin.set_fact:
+    argocd_server_insecure_update_required: >-
+      {{ argocd_server_insecure_result.rc != 0 or
+         argocd_server_insecure_result.stdout != (argocd_server_insecure | ternary('true', 'false')) }}
+
+- name: Render Argo CD command parameters manifest
+  ansible.builtin.copy:
+    dest: "{{ argocd_remote_manifest_dir }}/argocd-cmd-params-cm.yaml"
+    mode: "0644"
+    content: |
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: argocd-cmd-params-cm
+        namespace: {{ argocd_namespace }}
+      data:
+        server.insecure: {{ (argocd_server_insecure | ternary('true', 'false')) | to_json }}
+  when: argocd_server_insecure_update_required
+
+- name: Apply Argo CD command parameters
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl apply -f {{ argocd_remote_manifest_dir }}/argocd-cmd-params-cm.yaml
+  register: argocd_cmd_params_result
+  changed_when: >
+    'created' in argocd_cmd_params_result.stdout or 'configured' in argocd_cmd_params_result.stdout
+  when: argocd_server_insecure_update_required
+
+- name: Restart Argo CD server after command parameter changes
+  ansible.builtin.command:
+    cmd: /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} rollout restart deployment/argocd-server
+  when: argocd_server_insecure_update_required
+  changed_when: true
+
+- name: Wait for Argo CD server after command parameter changes
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} rollout status deployment/argocd-server --timeout=300s
+  when: argocd_server_insecure_update_required
+  changed_when: false
+
+# Intentional bootstrap exception: admin login must exist before GitOps can
+# fully take over the platform, so Ansible seeds only this credential.
+- name: Require an Argo CD admin password
+  ansible.builtin.assert:
+    that:
+      - argocd_admin_password | length > 0
+    fail_msg: "Set argocd_admin_password via ansible/secrets.yml before running this playbook."
+
+- name: Generate bcrypt hash for Argo CD admin password
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/htpasswd
+      - -bnBC
+      - "10"
+      - ""
+      - "{{ argocd_admin_password }}"
+  register: argocd_admin_password_hash_raw
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Set Argo CD admin password facts
+  ansible.builtin.set_fact:
+    argocd_admin_password_hash: "{{ argocd_admin_password_hash_raw.stdout | regex_replace('^:', '') }}"
+    argocd_admin_password_checksum: "{{ argocd_admin_password | hash('sha256') }}"
+    argocd_admin_password_mtime: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+  no_log: true
+
+- name: Read current Argo CD admin password checksum
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} get secret argocd-secret -o jsonpath={.metadata.annotations.homelab\\.io/admin-password-checksum}
+  register: argocd_admin_checksum_result
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Read current Argo CD admin password hash
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} get secret argocd-secret -o jsonpath={.data.admin\\.password}
+  register: argocd_admin_hash_result
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Determine whether Argo CD admin password update is required
+  ansible.builtin.set_fact:
+    argocd_admin_password_update_required: >-
+      {{ argocd_admin_checksum_result.rc != 0 or
+         argocd_admin_checksum_result.stdout != argocd_admin_password_checksum or
+         argocd_admin_hash_result.rc != 0 or
+         not ((argocd_admin_hash_result.stdout | b64decode).startswith('$2')) }}
+  no_log: true
+
+- name: Render Argo CD admin password secret manifest
+  ansible.builtin.copy:
+    dest: "{{ argocd_remote_manifest_dir }}/argocd-secret.yaml"
+    mode: "0600"
+    content: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: argocd-secret
+        namespace: {{ argocd_namespace }}
+        annotations:
+          homelab.io/admin-password-checksum: "{{ argocd_admin_password_checksum }}"
+      stringData:
+        admin.password: {{ argocd_admin_password_hash | to_json }}
+        admin.passwordMtime: {{ argocd_admin_password_mtime | to_json }}
+  when: argocd_admin_password_update_required
+  no_log: true
+
+- name: Apply Argo CD admin password secret data
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl apply -f {{ argocd_remote_manifest_dir }}/argocd-secret.yaml
+  register: argocd_admin_secret_result
+  changed_when: >
+    'created' in argocd_admin_secret_result.stdout or 'configured' in argocd_admin_secret_result.stdout
+  when: argocd_admin_password_update_required
+  no_log: true
+
+- name: Restart Argo CD server after admin credential changes
+  ansible.builtin.command:
+    cmd: /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} rollout restart deployment/argocd-server
+  when: argocd_admin_password_update_required
+  changed_when: true
+
+- name: Wait for Argo CD server after admin credential changes
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} rollout status deployment/argocd-server --timeout=300s
+  when: argocd_admin_password_update_required
+  changed_when: false
+
+# Intentional bootstrap exception: Argo CD needs one private-repo credential
+# before it can reconcile the Git source of truth.
+- name: Copy Argo CD repository private key to the host
+  ansible.builtin.copy:
+    dest: "{{ argocd_remote_manifest_dir }}/repo-key"
+    mode: "0600"
+    content: "{{ lookup('pipe', playbook_dir ~ '/../../scripts/render-argocd-repo-private-key') }}"
+  no_log: true
+
+- name: Read Argo CD repository private key content
+  ansible.builtin.slurp:
+    src: "{{ argocd_remote_manifest_dir }}/repo-key"
+  register: argocd_repo_key_raw
+  no_log: true
+
+- name: Require an Argo CD repository URL
+  ansible.builtin.assert:
+    that:
+      - argocd_repo_url | length > 0
+    fail_msg: "Set argocd_repo_url in inventory group vars before running this playbook."
+
+- name: Set Argo CD repository credential facts
+  ansible.builtin.set_fact:
+    argocd_repo_private_key: "{{ argocd_repo_key_raw.content | b64decode | trim }}"
+    argocd_repo_secret_checksum: "{{ (argocd_repo_url ~ '\n' ~ (argocd_repo_key_raw.content | b64decode | trim)) | hash('sha256') }}"
+  no_log: true
+
+- name: Read current Argo CD repository credential checksum
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} get secret {{ argocd_repo_secret_name }} -o jsonpath={.metadata.annotations.homelab\\.io/repo-secret-checksum}
+  register: argocd_repo_secret_checksum_result
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Read current Argo CD repository secret type label
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ argocd_namespace }} get secret {{ argocd_repo_secret_name }} -o jsonpath={.metadata.labels.argocd\\.argoproj\\.io/secret-type}
+  register: argocd_repo_secret_type_result
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Determine whether Argo CD repository credential update is required
+  ansible.builtin.set_fact:
+    argocd_repo_secret_update_required: >-
+      {{ argocd_repo_secret_checksum_result.rc != 0 or
+         argocd_repo_secret_checksum_result.stdout != argocd_repo_secret_checksum or
+         argocd_repo_secret_type_result.stdout != 'repository' }}
+  no_log: true
+
+- name: Render Argo CD repository credential manifest
+  ansible.builtin.copy:
+    dest: "{{ argocd_remote_manifest_dir }}/repo-secret.yaml"
+    mode: "0600"
+    content: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ argocd_repo_secret_name }}
+        namespace: {{ argocd_namespace }}
+        labels:
+          argocd.argoproj.io/secret-type: repository
+        annotations:
+          homelab.io/repo-secret-checksum: "{{ argocd_repo_secret_checksum }}"
+      stringData:
+        type: git
+        url: {{ argocd_repo_url | to_json }}
+        sshPrivateKey: {{ argocd_repo_private_key | to_json }}
+  when: argocd_repo_secret_update_required
+  no_log: true
+
+- name: Apply Argo CD repository credential
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl apply -f {{ argocd_remote_manifest_dir }}/repo-secret.yaml
+  register: argocd_repo_secret_result
+  changed_when: >
+    'created' in argocd_repo_secret_result.stdout or 'configured' in argocd_repo_secret_result.stdout
+  when: argocd_repo_secret_update_required
+  no_log: true
+
+# Final handoff: after the root application is applied, Argo CD owns ongoing
+# Kubernetes desired state and this role should not grow beyond the exceptions above.
+- name: Copy root Argo CD application manifest to the host
+  ansible.builtin.copy:
+    src: "{{ argocd_root_app_manifest }}"
+    dest: "{{ argocd_remote_manifest_dir }}/root-app.yaml"
+    mode: "0644"
+
+- name: Apply root Argo CD application
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl apply -f {{ argocd_remote_manifest_dir }}/root-app.yaml
+  register: argocd_root_app_result
+  changed_when: >
+    'created' in argocd_root_app_result.stdout or 'configured' in argocd_root_app_result.stdout

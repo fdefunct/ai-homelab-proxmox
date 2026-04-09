@@ -1,0 +1,25 @@
+[Unit]
+Description=Caddy web server
+Documentation=https://caddyserver.com/docs/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=caddy
+Group=caddy
+EnvironmentFile={{ openclaw_gateway_prep_caddy_env_path }}
+ExecStart={{ openclaw_gateway_prep_caddy_binary_path }} run --environ --config {{ openclaw_gateway_prep_caddy_config_path }} --adapter caddyfile
+ExecReload={{ openclaw_gateway_prep_caddy_binary_path }} reload --config {{ openclaw_gateway_prep_caddy_config_path }} --adapter caddyfile
+ExecStop=/bin/kill -s TERM $MAINPID
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths={{ openclaw_gateway_prep_caddy_data_dir }}
+
+[Install]
+WantedBy=multi-user.target

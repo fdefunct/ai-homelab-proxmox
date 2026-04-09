@@ -1,0 +1,26 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    "github>your-github-user/ai-homelab-proxmox//.renovate/customManagers.json5",
+    "github>your-github-user/ai-homelab-proxmox//.renovate/groups.json5",
+    "github>your-github-user/ai-homelab-proxmox//.renovate/labels.json5",
+    "github>your-github-user/ai-homelab-proxmox//.renovate/semanticCommits.json5",
+  ],
+  timezone: "America/Chicago",
+  dependencyDashboard: true,
+  platformAutomerge: false,
+  prConcurrentLimit: 5,
+  prHourlyLimit: 2,
+  enabledManagers: [
+    "ansible-galaxy",
+    "custom.regex",
+    "github-actions",
+    "helm-values",
+    "kubernetes",
+    "pip_requirements",
+    "terraform",
+  ],
+  schedule: ["after 12am and before 1am"],
+}

@@ -1,0 +1,35 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  packageRules: [
+    {
+      matchManagers: ["github-actions"],
+      groupName: "github actions",
+      matchUpdateTypes: ["minor", "patch", "digest"],
+    },
+    {
+      matchManagers: ["pip_requirements"],
+      groupName: "python requirements",
+      matchUpdateTypes: ["minor", "patch"],
+    },
+    {
+      matchManagers: ["ansible-galaxy"],
+      groupName: "ansible collections",
+      matchUpdateTypes: ["minor", "patch"],
+    },
+    {
+      matchManagers: ["terraform"],
+      matchDepTypes: ["required_provider"],
+      groupName: "terraform providers",
+      matchUpdateTypes: ["patch"],
+    },
+    {
+      matchManagers: ["custom.regex"],
+      matchFileNames: ["kubernetes/apps/platform/**/application.yaml"],
+      groupName: "kubernetes platform helm charts",
+    },
+    {
+      matchManagers: ["helm-values", "kubernetes"],
+      groupName: "kubernetes images",
+    },
+  ],
+}

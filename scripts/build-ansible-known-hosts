@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from collections.abc import Iterable
+from pathlib import Path
+from urllib.parse import urlparse
+import os
+import shutil
+import subprocess
+import sys
+
+import yaml
+
+
+ENV_NAME = os.environ.get("ENV_NAME") or (sys.argv[1] if len(sys.argv) > 1 else "home")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SSH_KEYSCAN_BIN = os.environ.get("SSH_KEYSCAN_BIN", "ssh-keyscan")
+
+
+def ordered_unique(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            unique.append(value)
+    return unique
+
+
+def load_yaml(path: Path):
+    try:
+        return yaml.safe_load(path.read_text())
+    except FileNotFoundError as exc:
+        raise ValueError(f"Missing required file: {path}") from exc
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{path}: YAML parse error: {exc}") from exc
+
+
+def parse_endpoint_host(config: dict) -> str:
+    endpoint = config.get("terraform", {}).get("endpoint")
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        raise ValueError("config: terraform.endpoint must be a non-empty URL")
+
+    host = urlparse(endpoint).hostname
+    if not host:
+        raise ValueError("config: could not parse terraform.endpoint host")
+    return host
+
+
+def iter_inventory_hosts(node) -> Iterable[str]:
+    if isinstance(node, dict):
+        hosts = node.get("hosts")
+        if isinstance(hosts, dict):
+            for host_name, host_vars in hosts.items():
+                if isinstance(host_vars, dict):
+                    ansible_host = host_vars.get("ansible_host")
+                    if isinstance(ansible_host, str) and ansible_host.strip():
+                        yield ansible_host
+                        continue
+                if isinstance(host_name, str) and host_name.strip():
+                    yield host_name
+
+        for value in node.values():
+            yield from iter_inventory_hosts(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from iter_inventory_hosts(item)
+
+
+def scan_host(host: str) -> list[str]:
+    result = subprocess.run(
+        [SSH_KEYSCAN_BIN, "-T", "5", host],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        stderr = result.stderr.strip() or "no host keys were returned"
+        raise RuntimeError(f"ssh-keyscan failed for {host}: {stderr}")
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def main() -> int:
+    if shutil.which(SSH_KEYSCAN_BIN) is None:
+        print(f"Missing required command: {SSH_KEYSCAN_BIN}", file=sys.stderr)
+        return 1
+
+    config_path = REPO_ROOT / "config" / f"{ENV_NAME}.yaml"
+    inventory_path = REPO_ROOT / "ansible" / "inventories" / ENV_NAME / "generated.yml"
+    output_path = REPO_ROOT / ".ansible" / "known_hosts"
+
+    try:
+        config = load_yaml(config_path)
+        inventory = load_yaml(inventory_path)
+        hosts = ordered_unique([parse_endpoint_host(config), *iter_inventory_hosts(inventory)])
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    lines = [
+        line
+        for host in hosts
+        for line in scan_host(host)
+    ]
+    unique_lines = ordered_unique(lines)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(unique_lines) + "\n")
+    os.chmod(output_path, 0o600)
+    print(f"Wrote {len(unique_lines)} known_hosts entries for {len(hosts)} hosts to {output_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

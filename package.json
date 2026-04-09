@@ -1,0 +1,16 @@
+{
+  "name": "ai-homelab-proxmox",
+  "private": true,
+  "devDependencies": {
+    "lefthook": "^1.13.6",
+    "prettier": "^3.6.2"
+  },
+  "scripts": {
+    "prepare": "lefthook install",
+    "format": "make format",
+    "format:check": "make format-check"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

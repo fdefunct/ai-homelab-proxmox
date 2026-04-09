@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+INTERFACE="{{ management_interface }}"
+
+{% if management_interface_tuning.disable_eee | default(false) %}
+exec /usr/sbin/ethtool --set-eee "$INTERFACE" eee off
+{% else %}
+exit 0
+{% endif %}

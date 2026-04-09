@@ -1,0 +1,91 @@
+#!/bin/bash
+set -euo pipefail
+
+usage() {
+  printf 'Usage: %s <repo> <version> <asset> <checksum-asset> <destination>\n' "$0" >&2
+  exit 1
+}
+
+if [ "$#" -ne 5 ]; then
+  usage
+fi
+
+REPO="$1"
+VERSION="$2"
+ASSET_NAME="$3"
+CHECKSUM_ASSET_NAME="$4"
+DESTINATION="$5"
+BASE_URL="${GITHUB_RELEASE_BASE_URL:-https://github.com}"
+TMP_DIR="$(mktemp -d)"
+
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT INT TERM
+
+hash_file() {
+  local file_path="$1"
+
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file_path" | awk '{print $1}'
+    return
+  fi
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file_path" | awk '{print $1}'
+    return
+  fi
+
+  local python_bin=""
+  if command -v python3 >/dev/null 2>&1; then
+    python_bin="python3"
+  elif command -v python >/dev/null 2>&1; then
+    python_bin="python"
+  else
+    printf 'Unable to compute SHA-256: need shasum, sha256sum, python3, or python.\n' >&2
+    exit 1
+  fi
+
+  "$python_bin" - "$file_path" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+digest = hashlib.sha256()
+with path.open("rb") as handle:
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+print(digest.hexdigest())
+PY
+}
+
+download_asset() {
+  local asset_name="$1"
+  local destination="$2"
+  curl -fsSL "${BASE_URL}/${REPO}/releases/download/v${VERSION}/${asset_name}" -o "$destination"
+}
+
+mkdir -p "$(dirname "$DESTINATION")"
+
+ASSET_PATH="$TMP_DIR/$ASSET_NAME"
+CHECKSUM_PATH="$TMP_DIR/$CHECKSUM_ASSET_NAME"
+
+download_asset "$ASSET_NAME" "$ASSET_PATH"
+download_asset "$CHECKSUM_ASSET_NAME" "$CHECKSUM_PATH"
+
+EXPECTED_CHECKSUM="$(awk -v asset="$ASSET_NAME" '$NF == asset { print $1; exit }' "$CHECKSUM_PATH")"
+if [ -z "$EXPECTED_CHECKSUM" ]; then
+  printf 'Checksum entry for %s not found in %s.\n' "$ASSET_NAME" "$CHECKSUM_ASSET_NAME" >&2
+  exit 1
+fi
+
+ACTUAL_CHECKSUM="$(hash_file "$ASSET_PATH")"
+if [ "$EXPECTED_CHECKSUM" != "$ACTUAL_CHECKSUM" ]; then
+  printf 'Checksum mismatch for %s.\n' "$ASSET_NAME" >&2
+  printf 'Expected: %s\n' "$EXPECTED_CHECKSUM" >&2
+  printf 'Actual:   %s\n' "$ACTUAL_CHECKSUM" >&2
+  exit 1
+fi
+
+cp "$ASSET_PATH" "$DESTINATION"

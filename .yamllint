@@ -1,0 +1,14 @@
+extends: default
+
+ignore: |
+  .ansible/
+  .venv/
+  ansible/artifacts/
+  ansible/inventories/*/generated.yml
+
+rules:
+  document-start: disable
+  line-length:
+    max: 140
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: true

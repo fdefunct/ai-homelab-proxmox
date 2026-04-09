@@ -1,0 +1,4 @@
+# Runtime-injected username for the Day 0 bootstrap SSH identity.
+# Render with `op read $(cat ansible/bootstrap-ssh-user)`.
+
+op://Homelab/pve-0-bootstrap/username

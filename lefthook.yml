@@ -1,0 +1,15 @@
+pre-commit:
+  parallel: true
+  commands:
+    prettier:
+      glob: "*.{json,md}"
+      run: npx prettier --write --ignore-unknown {staged_files} && git add {staged_files}
+      stage_fixed: true
+    yamlfmt:
+      glob: "*.{yml,yaml}"
+      run: ./.venv/bin/yamlfmt -conf .yamlfmt.yaml {staged_files} && git add {staged_files}
+      stage_fixed: true
+    generated-file-edits:
+      run: ./scripts/check-generated-file-edits --staged
+    gitleaks:
+      run: ./.venv/bin/gitleaks protect --staged -v

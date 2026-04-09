@@ -1,0 +1,10 @@
+k3s_server_config_dir: "/etc/rancher/k3s"
+k3s_server_config_path: "{{ k3s_server_config_dir }}/config.yaml"
+k3s_server_resolv_conf_path: "/run/systemd/resolve/resolv.conf"
+k3s_server_disable_components:
+  - servicelb
+  - traefik
+  - local-storage
+k3s_server_taints: []
+k3s_server_etcd_snapshot_schedule_cron: "0 */6 * * *"
+k3s_server_etcd_snapshot_retention: 14

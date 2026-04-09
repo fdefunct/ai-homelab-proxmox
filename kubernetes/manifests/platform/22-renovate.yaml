@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: renovate
+  annotations:
+    argocd.argoproj.io/sync-wave: "22"
+---
+# yaml-language-server: $schema=https://kubernetes-schemas.pages.dev/external-secrets.io/externalsecret_v1.json
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: renovate-env
+  namespace: renovate
+  annotations:
+    argocd.argoproj.io/sync-wave: "22"
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-sdk
+  target:
+    name: renovate-env
+    creationPolicy: Owner
+  data:
+    - secretKey: RENOVATE_TOKEN
+      remoteRef:
+        key: homelab-core-github-pat-renovate
+        property: credential

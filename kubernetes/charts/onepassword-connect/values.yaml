@@ -1,0 +1,10 @@
+connect:
+  applicationName: onepassword-connect
+  credentialsName: onepassword-connect-credentials
+  credentialsKey: 1password-credentials.json
+  serviceType: ClusterIP
+  ingress:
+    enabled: false
+
+operator:
+  create: false

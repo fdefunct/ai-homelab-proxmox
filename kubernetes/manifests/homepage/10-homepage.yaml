@@ -1,0 +1,786 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: homepage
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: homepage
+  namespace: homepage
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: homepage
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+      - nodes
+      - pods
+      - services
+      - endpoints
+      - persistentvolumeclaims
+      - configmaps
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - apps
+    resources:
+      - daemonsets
+      - deployments
+      - replicasets
+      - statefulsets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - batch
+    resources:
+      - cronjobs
+      - jobs
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - ingresses
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - metrics.k8s.io
+    resources:
+      - nodes
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: homepage
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: homepage
+subjects:
+  - kind: ServiceAccount
+    name: homepage
+    namespace: homepage
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: homepage-config
+  namespace: homepage
+data:
+  settings.yaml: |
+    title: AI Homelab
+    description: Internal operator dashboard
+    favicon: /icons/favicon.svg
+    background:
+      image: /backgrounds/background.jpg
+      blur: sm
+      opacity: 50
+    headerStyle: underlined
+    iconStyle: theme
+    theme: dark
+    color: slate
+    statusStyle: dot
+    quicklaunch:
+      searchDescriptions: true
+      hideInternetSearch: true
+    providers:
+      longhorn:
+        url: http://longhorn-frontend.longhorn-system.svc
+    pwa:
+      icons:
+        - src: /icons/favicon-192.png
+          sizes: 192x192
+          type: image/png
+        - src: /icons/favicon-512.png
+          sizes: 512x512
+          type: image/png
+    layout:
+      - Observability:
+          tab: Services
+          style: row
+          columns: 2
+      - Automation & Ops:
+          tab: Services
+          style: row
+          columns: 2
+      - Home:
+          tab: Services
+          style: row
+          columns: 2
+      - Virtualization:
+          tab: Platform
+          style: row
+          columns: 1
+      - Connectivity:
+          tab: Platform
+          style: row
+          columns: 2
+      - Network Storage:
+          tab: Platform
+          style: row
+          columns: 2
+      - Agents:
+          tab: Agents
+          style: row
+          columns: 2
+  services.yaml: |
+    - Observability:
+        - Argo CD:
+            href: https://argocd.example.com/
+            description: Cluster GitOps control plane
+            icon: si-argo
+            siteMonitor: http://argocd-server.argocd.svc/api/version
+            widget:
+              type: argocd
+              url: http://argocd-server.argocd.svc
+              key: "{{HOMEPAGE_VAR_ARGOCD_KEY}}"
+              fields:
+                - apps
+                - outOfSync
+                - healthy
+                - degraded
+        - Gatus:
+            href: https://status.example.com/
+            description: Status checks
+            icon: mdi-clipboard-pulse-outline
+            siteMonitor: http://gatus.gatus.svc/
+            widget:
+              type: gatus
+              url: http://gatus.gatus.svc
+              fields:
+                - up
+                - down
+                - uptime
+        - Rancher:
+            href: https://rancher.example.com/
+            description: Central cluster observability
+            icon: si-rancher
+            siteMonitor: https://rancher.example.com/
+        - Grafana:
+            href: https://grafana.ops.example.com/
+            description: Central dashboards
+            icon: si-grafana
+            siteMonitor: http://grafana.ops.example.com/
+    - Automation & Ops:
+        - n8n:
+            href: https://n8n.example.com/
+            description: AI workflows
+            icon: si-n8n
+            siteMonitor: https://n8n.example.com/
+        - NetBox:
+            href: https://netbox.example.com/
+            description: Source of truth
+            icon: mdi-ip-network
+            siteMonitor: https://netbox.example.com/
+    - Home:
+        - Home Assistant:
+            href: https://ha.example.com/
+            description: Home automation platform
+            icon: mdi-home-assistant
+            siteMonitor: https://ha.example.com/
+            widget:
+              type: homeassistant
+              url: https://ha.example.com/
+              key: "{{HOMEPAGE_VAR_HOME_ASSISTANT_KEY}}"
+            proxmoxNode: pve-0
+            proxmoxVMID: 100
+        - Mealie:
+            href: https://mealie.example.com/
+            description: Recipe manager and meal planner
+            icon: si-mealie
+            siteMonitor: https://mealie.example.com/
+            widget:
+              type: mealie
+              url: http://mealie.mealie.svc.cluster.local:9000
+              key: "{{HOMEPAGE_VAR_MEALIE_KEY}}"
+              version: 2
+              fields:
+                - recipes
+                - categories
+                - tags
+    - Virtualization:
+        - Homelab:
+            href: https://pve-0.example.com:8006/
+            description: Primary Proxmox Server
+            icon: si-proxmox
+            siteMonitor: https://pve-0.example.com:8006/
+            widget:
+              type: proxmox
+              url: https://pve-0.example.com:8006
+              node: pve-0
+              username: "{{HOMEPAGE_VAR_PROXMOX_USERNAME}}"
+              password: "{{HOMEPAGE_VAR_PROXMOX_TOKEN_SECRET}}"
+    - Connectivity:
+        - Homelab-EDGE:
+            description: Tailscale exit node and subnet router on home network
+            icon: mdi-console-network-outline
+            ping: 192.0.2.70
+            widget:
+              type: tailscale
+              deviceid: "{{HOMEPAGE_VAR_TAILSCALE_DEVICE_ID}}"
+              key: "{{HOMEPAGE_VAR_TAILSCALE_KEY}}"
+              fields:
+                - address
+                - last_seen
+                - expires
+            proxmoxNode: pve-0
+            proxmoxVMID: 200
+            proxmoxType: lxc
+        - Remote Edge:
+            description: Optional remote subnet router
+            icon: mdi-console-network-outline
+            ping: 198.51.100.51
+    - Network Storage:
+        - NAS-A:
+            href: http://nas-a.example.com:8480
+            description: Optional external NAS
+            icon: mdi-nas
+            siteMonitor: http://nas-a.example.com:8480
+            widget:
+              type: qnap
+              url: http://nas-a.example.com:8480
+              username: "{{HOMEPAGE_VAR_NAS_A_USERNAME}}"
+              password: "{{HOMEPAGE_VAR_NAS_A_PASSWORD}}"
+              fields:
+                - cpuUsage
+                - memUsage
+                - systemTempC
+                - poolUsage
+                - volumeUsage
+        - NAS-B:
+            href: http://nas-b.example.com:8480
+            description: Optional external NAS
+            icon: mdi-nas
+            siteMonitor: http://nas-b.example.com:8480
+            widget:
+              type: qnap
+              url: http://nas-b.example.com:8480
+              username: "{{HOMEPAGE_VAR_NAS_B_USERNAME}}"
+              password: "{{HOMEPAGE_VAR_NAS_B_PASSWORD}}"
+              fields:
+                - cpuUsage
+                - memUsage
+                - systemTempC
+                - poolUsage
+                - volumeUsage
+        - PBS-0:
+            href: https://pbs-0.example.com:8007/
+            description: Primary Proxmox Backup Server
+            icon: si-proxmox
+            siteMonitor: https://pbs-0.example.com:8007/
+            widget:
+              type: proxmoxbackupserver
+              url: https://pbs-0.example.com:8007
+              username: "{{HOMEPAGE_VAR_PBS_USERNAME}}"
+              password: "{{HOMEPAGE_VAR_PBS_TOKEN_SECRET}}"
+              datastore: datastore0
+              fields:
+                - datastore_usage
+                - failed_tasks_24h
+                - cpu_usage
+                - memory_usage
+    - Agents:
+        - Alpha:
+            href: https://gw.alpha.example.com/
+            description: Example automation gateway
+            icon: mdi-bow-tie
+            siteMonitor: https://gw.alpha.example.com/
+            proxmoxNode: pve-0
+            proxmoxVMID: 620
+        - Beta:
+            href: https://gw.beta.example.com/
+            description: Example research gateway
+            icon: mdi-magnify
+            siteMonitor: https://gw.beta.example.com/
+            proxmoxNode: pve-0
+            proxmoxVMID: 621
+        - Gamma:
+            href: https://gw.gamma.example.com/
+            description: Example infrastructure gateway
+            icon: mdi-hammer-wrench
+            siteMonitor: https://gw.gamma.example.com/
+            proxmoxNode: pve-0
+            proxmoxVMID: 622
+  kubernetes.yaml: |
+    mode: cluster
+  proxmox.yaml: |
+    pve-0:
+      url: https://pve-0.example.com:8006
+      token: "{{HOMEPAGE_VAR_PROXMOX_USERNAME}}"
+      secret: "{{HOMEPAGE_VAR_PROXMOX_TOKEN_SECRET}}"
+  bookmarks.yaml: |
+    - Repositories:
+        - This Repo:
+            - href: https://github.com/your-github-user/ai-homelab-proxmox
+              icon: si-proxmox
+    - Services:
+        - 1Password:
+            - href: https://my.1password.com/
+              icon: si-1password
+        - Cloudflare:
+            - href: https://dash.cloudflare.com/login
+              icon: si-cloudflare
+        - Tailscale:
+            - href: https://login.tailscale.com
+              icon: si-tailscale
+        - GitHub:
+            - href: https://github.com/
+              icon: si-github
+    - Hosting:
+        - Backblaze:
+            - href: https://secure.backblaze.com/user_signin.htm
+              icon: si-backblaze
+  widgets.yaml: |
+    - datetime:
+        text_size: sm
+        format:
+          hour: 2-digit
+          minute: 2-digit
+          hourCycle: h23
+          timeZone: America/Chicago
+          timeZoneName: short
+    - datetime:
+        text_size: sm
+        format:
+          hour: 2-digit
+          minute: 2-digit
+          hourCycle: h23
+          timeZone: UTC
+          timeZoneName: short
+    - logo:
+        icon: /icons/globe.svg
+    - greeting:
+        text_size: 3xl
+        text: Core
+    - kubernetes:
+        cluster:
+          show: true
+          cpu: true
+          memory: true
+          showLabel: false
+        nodes:
+          show: false
+          cpu: false
+          memory: false
+          showLabel: false
+    - longhorn:
+        expanded: true
+        total: true
+        labels: false
+        nodes: false
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: homepage-argocd-token
+  namespace: homepage
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: onepassword-sdk
+    kind: ClusterSecretStore
+  target:
+    name: homepage-argocd-token
+    creationPolicy: Owner
+  data:
+    - secretKey: argocd-key
+      remoteRef:
+        key: homelab-core-homepage-argocd
+        property: credential
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: homepage-proxmox-token
+  namespace: homepage
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: onepassword-sdk
+    kind: ClusterSecretStore
+  target:
+    name: homepage-proxmox-token
+    creationPolicy: Owner
+  data:
+    - secretKey: username
+      remoteRef:
+        key: pve-0-api-homepage
+        property: username
+    - secretKey: token-secret
+      remoteRef:
+        key: pve-0-api-homepage
+        property: credential
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: homepage-home-assistant-token
+  namespace: homepage
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: onepassword-sdk
+    kind: ClusterSecretStore
+  target:
+    name: homepage-home-assistant-token
+    creationPolicy: Owner
+  data:
+    - secretKey: key
+      remoteRef:
+        key: homelab-core-homepage-ha
+        property: credential
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: homepage-tailscale-token
+  namespace: homepage
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: onepassword-sdk
+    kind: ClusterSecretStore
+  target:
+    name: homepage-tailscale-token
+    creationPolicy: Owner
+  data:
+    - secretKey: key
+      remoteRef:
+        key: homelab-core-homepage-tailscale
+        property: credential
+    - secretKey: device-id
+      remoteRef:
+        key: homelab-core-homepage-tailscale
+        property: device id
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: homepage-pbs-token
+  namespace: homepage
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: onepassword-sdk
+    kind: ClusterSecretStore
+  target:
+    name: homepage-pbs-token
+    creationPolicy: Owner
+  data:
+    - secretKey: username
+      remoteRef:
+        key: pbs-0-api-homepage
+        property: username
+    - secretKey: token-secret
+      remoteRef:
+        key: pbs-0-api-homepage
+        property: credential
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: homepage-mealie-token
+  namespace: homepage
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: onepassword-sdk
+    kind: ClusterSecretStore
+  target:
+    name: homepage-mealie-token
+    creationPolicy: Owner
+  data:
+    - secretKey: key
+      remoteRef:
+        key: homelab-core-homepage-mealie
+        property: credential
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: homepage-nas-a-token
+  namespace: homepage
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: onepassword-sdk
+    kind: ClusterSecretStore
+  target:
+    name: homepage-nas-a-token
+    creationPolicy: Owner
+  data:
+    - secretKey: username
+      remoteRef:
+        key: homelab-core-homepage-nas-a
+        property: username
+    - secretKey: password
+      remoteRef:
+        key: homelab-core-homepage-nas-a
+        property: password
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: homepage-nas-b-token
+  namespace: homepage
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: onepassword-sdk
+    kind: ClusterSecretStore
+  target:
+    name: homepage-nas-b-token
+    creationPolicy: Owner
+  data:
+    - secretKey: username
+      remoteRef:
+        key: homelab-core-homepage-nas-b
+        property: username
+    - secretKey: password
+      remoteRef:
+        key: homelab-core-homepage-nas-b
+        property: password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homepage
+  namespace: homepage
+  annotations:
+    reloader.stakater.com/auto: "true"
+    checkov.io/skip1: "CKV_K8S_38=homepage requires SA token for Kubernetes cluster info widget"
+    checkov.io/skip2: "CKV_K8S_35=many env vars required for homepage widget integrations"
+    checkov.io/skip3: "CKV_K8S_40=homepage image runs as UID 1000 by design"
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: homepage
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: homepage
+    spec:
+      serviceAccountName: homepage
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: copy-config
+          image: busybox:1.36
+          command:
+            - /bin/sh
+            - -c
+            - cp /config-src/* /app/config/ && mkdir -p /app/config/logs
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+          volumeMounts:
+            - name: config-src
+              mountPath: /config-src
+              readOnly: true
+            - name: config-dir
+              mountPath: /app/config
+      containers:
+        - name: homepage
+          image: ghcr.io/gethomepage/homepage:v1.8.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOMEPAGE_ALLOWED_HOSTS
+              value: core.example.com
+            - name: HOMEPAGE_VAR_ARGOCD_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: homepage-argocd-token
+                  key: argocd-key
+            - name: HOMEPAGE_VAR_PROXMOX_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: homepage-proxmox-token
+                  key: username
+            - name: HOMEPAGE_VAR_PROXMOX_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: homepage-proxmox-token
+                  key: token-secret
+            - name: HOMEPAGE_VAR_PBS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: homepage-pbs-token
+                  key: username
+            - name: HOMEPAGE_VAR_PBS_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: homepage-pbs-token
+                  key: token-secret
+            - name: HOMEPAGE_VAR_TAILSCALE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: homepage-tailscale-token
+                  key: key
+            - name: HOMEPAGE_VAR_TAILSCALE_DEVICE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: homepage-tailscale-token
+                  key: device-id
+            - name: HOMEPAGE_VAR_HOME_ASSISTANT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: homepage-home-assistant-token
+                  key: key
+            - name: HOMEPAGE_VAR_MEALIE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: homepage-mealie-token
+                  key: key
+            - name: HOMEPAGE_VAR_NAS_A_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: homepage-nas-a-token
+                  key: username
+            - name: HOMEPAGE_VAR_NAS_A_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: homepage-nas-a-token
+                  key: password
+            - name: HOMEPAGE_VAR_NAS_B_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: homepage-nas-b-token
+                  key: username
+            - name: HOMEPAGE_VAR_NAS_B_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: homepage-nas-b-token
+                  key: password
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsUser: 1000
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: config-dir
+              mountPath: /app/config
+            - name: homepage-assets
+              mountPath: /app/public/icons
+              readOnly: true
+            - name: homepage-assets
+              mountPath: /app/public/backgrounds
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config-src
+          configMap:
+            name: homepage-config
+        - name: config-dir
+          emptyDir: {}
+        - name: homepage-assets
+          configMap:
+            name: homepage-assets
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: homepage
+  namespace: homepage
+spec:
+  selector:
+    app.kubernetes.io/name: homepage
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: homepage
+  namespace: homepage
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-cloudflare
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - core.example.com
+      secretName: homepage-tls
+  rules:
+    - host: core.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: homepage
+                port:
+                  number: 3000
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: homepage-tls
+  namespace: homepage
+spec:
+  secretName: homepage-tls
+  issuerRef:
+    name: letsencrypt-cloudflare
+    kind: ClusterIssuer
+  dnsNames:
+    - core.example.com

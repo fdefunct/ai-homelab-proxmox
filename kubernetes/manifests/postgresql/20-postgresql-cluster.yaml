@@ -1,0 +1,48 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgresql
+  namespace: postgresql
+spec:
+  instances: 1
+
+  bootstrap:
+    initdb:
+      database: netbox
+      owner: netbox
+      secret:
+        name: postgresql-netbox-credentials
+
+  managed:
+    roles:
+      - name: n8n
+        passwordSecret:
+          name: postgresql-n8n-credentials
+        login: true
+      - name: mealie
+        passwordSecret:
+          name: postgresql-mealie-credentials
+        login: true
+
+  superuserSecret:
+    name: postgresql-superuser
+
+  storage:
+    storageClass: longhorn
+    size: 10Gi
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+  postgresql:
+    parameters:
+      shared_buffers: "256MB"
+      effective_cache_size: "512MB"
+      work_mem: "8MB"
+      maintenance_work_mem: "128MB"
+      max_connections: "100"

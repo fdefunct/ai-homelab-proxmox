@@ -1,0 +1,6 @@
+- name: Generate Preferred Locale
+  ansible.builtin.command:
+    argv:
+      - locale-gen
+      - "{{ locale }}"
+  changed_when: true

@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from argparse import ArgumentParser
+from pathlib import Path
+import sys
+
+import yaml
+
+
+def parse_args() -> object:
+    parser = ArgumentParser(description="Build a markdown summary for Kubernetes PR validation.")
+    parser.add_argument("--changed-files", required=True, help="Path to newline-delimited changed Kubernetes files")
+    parser.add_argument("--kubernetes-validate", required=True, help="Outcome for kubernetes-validate step")
+    parser.add_argument("--kubeconform-validate", required=True, help="Outcome for kubeconform-validate step")
+    parser.add_argument("--workflow-run-url", required=True, help="Workflow run URL for artifact lookup")
+    return parser.parse_args()
+
+
+def load_changed_files(path: Path) -> list[str]:
+    files = []
+    for line in path.read_text().splitlines():
+        value = line.strip()
+        if value:
+            files.append(value)
+    return sorted(set(files))
+
+
+def load_application_name(path: Path) -> str | None:
+    if not path.exists():
+        return None
+
+    try:
+        docs = [doc for doc in yaml.safe_load_all(path.read_text()) if isinstance(doc, dict)]
+    except yaml.YAMLError:
+        return None
+
+    for doc in docs:
+        metadata = doc.get("metadata", {})
+        name = metadata.get("name")
+        if isinstance(name, str) and name:
+            return name
+
+    return None
+
+
+def summarize_apps(changed_files: list[str], repo_root: Path) -> list[str]:
+    names: set[str] = set()
+
+    for file_name in changed_files:
+        path = Path(file_name)
+        parts = path.parts
+
+        if path.name == "application.yaml":
+            name = load_application_name(repo_root / path)
+            if name:
+                names.add(name)
+                continue
+
+        if len(parts) >= 5 and parts[:3] == ("kubernetes", "apps", "platform"):
+            app_dir = repo_root / Path(*parts[:5])
+            name = load_application_name(app_dir / "application.yaml")
+            names.add(name or "/".join(parts[3:5]))
+
+    return sorted(names)
+
+
+def summarize_segments(changed_files: list[str], prefix: tuple[str, ...], beta: int) -> list[str]:
+    values = set()
+    for file_name in changed_files:
+        parts = Path(file_name).parts
+        if len(parts) > index and parts[: len(prefix)] == prefix:
+            values.add(parts[index])
+    return sorted(values)
+
+
+def render_status(name: str, outcome: str) -> str:
+    label = "PASS" if outcome == "success" else "FAIL"
+    return f"- `{name}`: `{label}`"
+
+
+def main() -> None:
+    args = parse_args()
+    repo_root = Path(__file__).resolve().parent.parent
+    changed_files = load_changed_files(Path(args.changed_files))
+    changed_apps = summarize_apps(changed_files, repo_root)
+    changed_charts = summarize_segments(changed_files, ("kubernetes", "charts"), 2)
+    changed_manifest_areas = summarize_segments(changed_files, ("kubernetes", "manifests"), 2)
+
+    lines = [
+        "## Kubernetes PR Feedback",
+        "",
+        "Validation results:",
+        render_status("kubernetes-validate", args.kubernetes_validate),
+        render_status("kubeconform-validate", args.kubeconform_validate),
+        "",
+        f"Changed Kubernetes files: `{len(changed_files)}`",
+    ]
+
+    preview_count = 12
+    for file_name in changed_files[:preview_count]:
+        lines.append(f"- `{file_name}`")
+    if len(changed_files) > preview_count:
+        lines.append(f"- `...` and `{len(changed_files) - preview_count}` more")
+
+    if changed_apps:
+        lines.extend(["", "Affected Argo CD applications:"])
+        for name in changed_apps:
+            lines.append(f"- `{name}`")
+
+    if changed_charts:
+        lines.extend(["", "Touched chart values:"])
+        for name in changed_charts:
+            lines.append(f"- `{name}`")
+
+    if changed_manifest_areas:
+        lines.extend(["", "Touched manifest areas:"])
+        for name in changed_manifest_areas:
+            lines.append(f"- `{name}`")
+
+    lines.extend(
+        [
+            "",
+            "Artifacts:",
+            f"- Workflow run: {args.workflow_run_url}",
+            "- Validation artifact: `kubernetes-validation`",
+        ]
+    )
+
+    sys.stdout.write("\n".join(lines) + "\n")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,4 @@
+# Runtime-injected private key for the Argo CD repository bootstrap credential.
+# Render with `op read $(cat ansible/argocd-repo-private-key)`.
+
+op://Homelab/homelab-core-argocd/private key

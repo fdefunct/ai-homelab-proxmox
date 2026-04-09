@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Sync Labels
+
+"on":
+  push:
+    branches: [main]
+    paths:
+      - .github/labels.yaml
+      - .github/workflows/label-sync.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+
+      # v1
+
+      - uses: micnncim/action-label-syncer@3abd5ab72fda571e69fffd97bd4e0033dd5f495c
+        with:
+          manifest: .github/labels.yaml
+          token: ${{ secrets.GITHUB_TOKEN }}

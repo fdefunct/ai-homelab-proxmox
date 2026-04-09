@@ -1,0 +1,115 @@
+existingSecret: netbox-secrets
+secretKey: secret_key
+
+extraConfig:
+  - secret:
+      secretName: netbox-secrets
+      items:
+        - key: api_token_peppers.yaml
+          path: api_token_peppers.yaml
+
+superuser:
+  existingSecret: netbox-secrets
+  existingSecretKey: superuser_password
+  email: admin@example.com
+
+postgresql:
+  enabled: false
+
+valkey:
+  enabled: false
+
+externalDatabase:
+  host: postgresql-rw.postgresql.svc.cluster.local
+  port: 5432
+  database: netbox
+  username: netbox
+  existingSecretName: netbox-secrets
+  existingSecretKey: db_password
+
+tasksDatabase:
+  host: redis-master.redis.svc.cluster.local
+  port: 6379
+  database: 0
+  existingSecretName: netbox-secrets
+  existingSecretKey: redis_password
+
+cachingDatabase:
+  host: redis-master.redis.svc.cluster.local
+  port: 6379
+  database: 1
+  existingSecretName: netbox-secrets
+  existingSecretKey: redis_password
+
+persistence:
+  enabled: true
+  storageClass: longhorn
+  size: 5Gi
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+updateStrategy:
+  type: Recreate
+
+housekeeping:
+  enabled: false
+  affinity:
+    podAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values:
+                  - netbox
+              - key: app.kubernetes.io/instance
+                operator: In
+                values:
+                  - netbox
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - netbox
+          topologyKey: kubernetes.io/hostname
+
+worker:
+  updateStrategy:
+    type: Recreate
+  affinity:
+    podAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values:
+                  - netbox
+              - key: app.kubernetes.io/instance
+                operator: In
+                values:
+                  - netbox
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - netbox
+          topologyKey: kubernetes.io/hostname
+
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-cloudflare
+  hosts:
+    - host: netbox.example.com
+      paths:
+        - /
+  tls:
+    - secretName: netbox-tls
+      hosts:
+        - netbox.example.com

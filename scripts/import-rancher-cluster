@@ -1,0 +1,238 @@
+#!/bin/bash
+set -euo pipefail
+
+REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$REPO_ROOT"
+
+ENV_NAME="${ENV_NAME:-home}"
+PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
+INVENTORY_PATH="$REPO_ROOT/ansible/inventories/$ENV_NAME/generated.yml"
+TMP_SECRETS="$(mktemp /tmp/homelab-pve-rancher-secrets.XXXXXX)"
+TMP_MANIFEST="$(mktemp /tmp/homelab-pve-rancher-manifest.XXXXXX)"
+RANCHER_REACHABILITY_NAMESPACE="${RANCHER_REACHABILITY_NAMESPACE:-default}"
+RANCHER_REACHABILITY_POD="rancher-reachability-$$"
+
+cleanup() {
+  rm -f "$TMP_SECRETS" "$TMP_MANIFEST"
+  if [ -n "${KUBECONFIG_PATH:-}" ]; then
+    KUBECONFIG="$KUBECONFIG_PATH" kubectl -n "$RANCHER_REACHABILITY_NAMESPACE" delete pod "$RANCHER_REACHABILITY_POD" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'Missing required command: %s\n' "$1" >&2
+    exit 1
+  fi
+}
+
+need_file() {
+  if [ ! -f "$1" ]; then
+    printf 'Missing required file: %s\n' "$1" >&2
+    exit 1
+  fi
+}
+
+need_cmd curl
+need_cmd jq
+need_cmd kubectl
+need_cmd op
+need_file "$PYTHON_BIN"
+need_file "$INVENTORY_PATH"
+
+wait_for_deployment() {
+  namespace="$1"
+  name="$2"
+  attempt=0
+  while [ $attempt -lt 30 ]; do
+    if KUBECONFIG="$KUBECONFIG_PATH" kubectl -n "$namespace" get deployment "$name" >/dev/null 2>&1; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 5
+  done
+  return 1
+}
+
+wait_for_rancher_cleanup_completion() {
+  attempt=0
+  while [ $attempt -lt 36 ]; do
+    cleanup_resources=$(
+      KUBECONFIG="$KUBECONFIG_PATH" kubectl get jobs,pods -A --no-headers 2>/dev/null |
+        grep 'cattle-cleanup-' || true
+    )
+    cleanup_rbac=$(
+      KUBECONFIG="$KUBECONFIG_PATH" kubectl get clusterrole,clusterrolebinding -o name 2>/dev/null |
+        grep 'cattle-cleanup-' || true
+    )
+
+    if [ -z "$cleanup_resources" ] && [ -z "$cleanup_rbac" ]; then
+      return 0
+    fi
+
+    if [ -z "$cleanup_resources" ] && [ -n "$cleanup_rbac" ]; then
+      if [ $attempt -eq 0 ]; then
+        printf 'Removing stale Rancher cleanup RBAC with no active cleanup jobs or pods\n'
+      fi
+      printf '%s\n' "$cleanup_rbac" |
+        while IFS= read -r resource; do
+          [ -n "$resource" ] || continue
+          KUBECONFIG="$KUBECONFIG_PATH" kubectl delete "$resource" --ignore-not-found >/dev/null 2>&1 || true
+        done
+      attempt=$((attempt + 1))
+      sleep 2
+      continue
+    fi
+
+    if [ $attempt -eq 0 ]; then
+      printf 'Waiting for previous Rancher cleanup resources to finish before import\n'
+    fi
+    attempt=$((attempt + 1))
+    sleep 5
+  done
+
+  printf 'Timed out waiting for previous Rancher cleanup resources to finish\n' >&2
+  return 1
+}
+
+ensure_rancher_server_url() {
+  current_server_url=$(
+    /usr/bin/curl -ksS -H "Authorization: Bearer $RANCHER_API_TOKEN" "$RANCHER_URL/v3/settings/server-url" |
+      jq -r '.value // ""'
+  )
+
+  if [ "$current_server_url" = "$RANCHER_URL" ]; then
+    return 0
+  fi
+
+  printf 'Updating Rancher server-url from "%s" to "%s"\n' "$current_server_url" "$RANCHER_URL"
+  /usr/bin/curl -ksS -X PUT \
+    -H "Authorization: Bearer $RANCHER_API_TOKEN" \
+    -H "Content-Type: application/json" \
+    "$RANCHER_URL/v3/settings/server-url" \
+    -d "{\"name\":\"server-url\",\"value\":\"$RANCHER_URL\"}" >/dev/null
+}
+
+check_rancher_reachability() {
+  KUBECONFIG="$KUBECONFIG_PATH" kubectl -n "$RANCHER_REACHABILITY_NAMESPACE" delete pod "$RANCHER_REACHABILITY_POD" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  KUBECONFIG="$KUBECONFIG_PATH" kubectl -n "$RANCHER_REACHABILITY_NAMESPACE" run "$RANCHER_REACHABILITY_POD" \
+    --image=curlimages/curl:8.12.1 \
+    --restart=Never \
+    --command -- sleep 300 >/dev/null
+  KUBECONFIG="$KUBECONFIG_PATH" kubectl -n "$RANCHER_REACHABILITY_NAMESPACE" wait --for=condition=Ready "pod/$RANCHER_REACHABILITY_POD" --timeout=180s >/dev/null
+  if ! KUBECONFIG="$KUBECONFIG_PATH" kubectl -n "$RANCHER_REACHABILITY_NAMESPACE" exec "$RANCHER_REACHABILITY_POD" -- \
+    curl -fsS --connect-timeout 10 "$RANCHER_URL/ping" >/dev/null; then
+    printf 'Rancher preflight failed: %s is not reachable from cluster pods.\n' "$RANCHER_URL" >&2
+    printf 'Expected path: homelab-core nodes must have a working route to rancher.example.com, including the external access path used by your Rancher integration.\n' >&2
+    return 1
+  fi
+}
+
+wait_for_rancher_agent_health() {
+  if ! wait_for_deployment cattle-system cattle-cluster-agent; then
+    printf 'Timed out waiting for cattle-cluster-agent deployment to appear in cattle-system\n' >&2
+    return 1
+  fi
+
+  if ! KUBECONFIG="$KUBECONFIG_PATH" kubectl -n cattle-system rollout status deployment/cattle-cluster-agent --timeout=300s; then
+    printf 'Rancher import failed: cattle-cluster-agent did not become ready\n' >&2
+    KUBECONFIG="$KUBECONFIG_PATH" kubectl -n cattle-system get pods -o wide >&2 || true
+    KUBECONFIG="$KUBECONFIG_PATH" kubectl -n cattle-system logs deploy/cattle-cluster-agent --tail=120 >&2 || true
+    return 1
+  fi
+}
+
+./scripts/render-ansible-secrets > "$TMP_SECRETS"
+
+EXPORTS=$(
+  "$PYTHON_BIN" - "$REPO_ROOT/config/$ENV_NAME.yaml" "$INVENTORY_PATH" "$TMP_SECRETS" <<'PY'
+from pathlib import Path
+import sys
+import yaml
+
+config = yaml.safe_load(Path(sys.argv[1]).read_text())
+inventory = yaml.safe_load(Path(sys.argv[2]).read_text())
+secrets = yaml.safe_load(Path(sys.argv[3]).read_text())
+
+server_group = inventory["all"]["vars"]["k3s_server_group"]
+server_name = next(iter(inventory["all"]["children"][server_group]["hosts"]))
+
+print(f"RANCHER_URL=https://{config['platform']['rancher_hostname']}")
+print(f"CLUSTER_NAME={config['platform']['cluster_name']}")
+print(f"KUBECONFIG_PATH=ansible/artifacts/kubeconfig/{server_name}.yaml")
+print(f"RANCHER_API_TOKEN={secrets['rancher_api_token']}")
+PY
+)
+eval "$EXPORTS"
+
+need_file "$KUBECONFIG_PATH"
+ensure_rancher_server_url
+check_rancher_reachability
+wait_for_rancher_cleanup_completion
+
+cluster_id=$(
+  /usr/bin/curl -ksS -H "Authorization: Bearer $RANCHER_API_TOKEN" "$RANCHER_URL/v3/clusters" |
+    jq -r --arg name "$CLUSTER_NAME" '.data[] | select(.name == $name) | .id' |
+    head -n1
+)
+
+if [ -z "$cluster_id" ]; then
+  cluster_id=$(
+    /usr/bin/curl -ksS -X POST \
+      -H "Authorization: Bearer $RANCHER_API_TOKEN" \
+      -H "Content-Type: application/json" \
+      "$RANCHER_URL/v3/clusters" \
+      -d "{\"type\":\"cluster\",\"name\":\"$CLUSTER_NAME\"}" |
+      jq -r '.id'
+  )
+fi
+
+if [ -z "$cluster_id" ] || [ "$cluster_id" = "null" ]; then
+  printf 'Unable to create or locate Rancher cluster %s\n' "$CLUSTER_NAME" >&2
+  exit 1
+fi
+
+registration_response=$(
+  /usr/bin/curl -ksS -X POST \
+    -H "Authorization: Bearer $RANCHER_API_TOKEN" \
+    -H "Content-Type: application/json" \
+    "$RANCHER_URL/v3/clusterregistrationtokens" \
+    -d "{\"type\":\"clusterRegistrationToken\",\"clusterId\":\"$cluster_id\"}"
+)
+
+registration_url=$(printf '%s' "$registration_response" | jq -r '.links.self')
+registration_token=$(printf '%s' "$registration_response" | jq -r '.token')
+
+if [ -z "$registration_url" ] || [ "$registration_url" = "null" ]; then
+  printf 'Unable to create Rancher registration token for cluster %s\n' "$cluster_id" >&2
+  exit 1
+fi
+
+if [ -n "$registration_token" ] && [ "$registration_token" != "null" ]; then
+  manifest_url="$RANCHER_URL/v3/import/${registration_token}_${cluster_id}.yaml"
+else
+  manifest_url=""
+  attempt=0
+  while [ $attempt -lt 30 ]; do
+    manifest_url=$(
+      /usr/bin/curl -ksS -H "Authorization: Bearer $RANCHER_API_TOKEN" "$registration_url" |
+        jq -r '.manifestUrl'
+    )
+    if [ -n "$manifest_url" ] && [ "$manifest_url" != "null" ]; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    sleep 5
+  done
+
+  if [ -z "$manifest_url" ] || [ "$manifest_url" = "null" ]; then
+    printf 'Timed out waiting for Rancher import manifest URL\n' >&2
+    exit 1
+  fi
+fi
+
+/usr/bin/curl -ksS -H "Authorization: Bearer $RANCHER_API_TOKEN" "$manifest_url" > "$TMP_MANIFEST"
+KUBECONFIG="$KUBECONFIG_PATH" kubectl apply -f "$TMP_MANIFEST"
+wait_for_rancher_agent_health
+printf 'Imported %s into Rancher cluster %s\n' "$CLUSTER_NAME" "$cluster_id"

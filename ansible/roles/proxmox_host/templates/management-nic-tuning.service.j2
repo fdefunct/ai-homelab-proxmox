@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply management NIC tuning for {{ management_interface }}
+After=network-pre.target systemd-udev-settle.service
+Wants=network-pre.target systemd-udev-settle.service
+ConditionPathExists=/sys/class/net/{{ management_interface }}
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/apply-management-nic-tuning
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,210 @@
+- name: Record whether this node should route traffic for Tailscale
+  ansible.builtin.set_fact:
+    tailscale_routing_enabled: "{{ tailscale_advertise_exit_node or (tailscale_advertise_routes | length > 0) }}"
+    tailscale_forwarding_required: >-
+      {{
+        (tailscale_advertise_exit_node or (tailscale_advertise_routes | length > 0))
+        or ('k3s_server' in group_names)
+        or ('k3s_agents' in group_names)
+      }}
+    tailscale_effective_hostname: "{{ tailscale_hostname | default(inventory_hostname) }}"
+    tailscale_apt_repo_os: "{{ 'ubuntu' if ansible_distribution == 'Ubuntu' else 'debian' }}"
+    tailscale_exit_node_routes:
+      - 0.0.0.0/0
+      - ::/0
+  when: install_tailscale
+
+- name: Compare the current Tailscale repository key with the pinned upstream content
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if [ ! -f /usr/share/keyrings/tailscale-archive-keyring.gpg ]; then
+      exit 1
+    fi
+    curl -fsSL "https://pkgs.tailscale.com/stable/{{ tailscale_apt_repo_os }}/{{ ansible_distribution_release }}.noarmor.gpg" \
+      | cmp -s - /usr/share/keyrings/tailscale-archive-keyring.gpg
+  args:
+    executable: /bin/bash
+  register: tailscale_repo_key_check
+  changed_when: false
+  failed_when: tailscale_repo_key_check.rc not in [0, 1]
+  check_mode: false
+  when: install_tailscale
+
+- name: Ensure the Tailscale repository key is present
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/{{ tailscale_apt_repo_os }}/{{ ansible_distribution_release }}.noarmor.gpg"
+    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+    mode: "0644"
+  register: tailscale_repo_key
+  when:
+    - install_tailscale
+    - tailscale_repo_key_check.rc != 0
+
+- name: Compare the current Tailscale apt source with the pinned upstream content
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if [ ! -f /etc/apt/sources.list.d/tailscale.list ]; then
+      exit 1
+    fi
+    curl -fsSL "https://pkgs.tailscale.com/stable/{{ tailscale_apt_repo_os }}/{{ ansible_distribution_release }}.tailscale-keyring.list" \
+      | cmp -s - /etc/apt/sources.list.d/tailscale.list
+  args:
+    executable: /bin/bash
+  register: tailscale_repo_list_check
+  changed_when: false
+  failed_when: tailscale_repo_list_check.rc not in [0, 1]
+  check_mode: false
+  when: install_tailscale
+
+- name: Ensure the Tailscale apt repository is present
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/{{ tailscale_apt_repo_os }}/{{ ansible_distribution_release }}.tailscale-keyring.list"
+    dest: /etc/apt/sources.list.d/tailscale.list
+    mode: "0644"
+  register: tailscale_repo_list
+  when:
+    - install_tailscale
+    - tailscale_repo_list_check.rc != 0
+
+- name: Refresh apt metadata after Tailscale repository changes
+  ansible.builtin.apt:
+    update_cache: true
+  changed_when: false
+  when:
+    - install_tailscale
+    - not ansible_check_mode
+    - (tailscale_repo_key is defined and tailscale_repo_key.changed) or (tailscale_repo_list is defined and tailscale_repo_list.changed)
+
+- name: Install Tailscale
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+  when: install_tailscale
+
+- name: Ensure tailscaled is enabled and running
+  ansible.builtin.service:
+    name: tailscaled
+    enabled: true
+    state: started
+  when: install_tailscale
+
+- name: Enable IPv4 forwarding for Tailscale subnet routing
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "{{ '1' if tailscale_forwarding_required else '0' }}"
+    state: present
+    reload: true
+  when: install_tailscale
+
+- name: Enable IPv6 forwarding for Tailscale subnet routing
+  ansible.posix.sysctl:
+    name: net.ipv6.conf.all.forwarding
+    value: "{{ '1' if tailscale_forwarding_required else '0' }}"
+    state: present
+    reload: true
+  when: install_tailscale
+
+- name: Read current UDP GRO forwarding status
+  ansible.builtin.command:
+    argv:
+      - ethtool
+      - -k
+      - "{{ management_bridge }}"
+  register: gro_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: install_tailscale
+
+- name: Converge UDP GRO forwarding on the Proxmox bridge
+  ansible.builtin.command:
+    argv:
+      - ethtool
+      - -K
+      - "{{ management_bridge }}"
+      - rx-udp-gro-forwarding
+      - "{{ 'on' if tailscale_routing_enabled else 'off' }}"
+  register: gro_toggle
+  failed_when: false
+  changed_when: gro_toggle.rc == 0
+  when:
+    - install_tailscale
+    - gro_status.stdout is defined
+    - >
+      ('rx-udp-gro-forwarding: off' in gro_status.stdout and tailscale_routing_enabled) or ('rx-udp-gro-forwarding: on' in gro_status.stdout and not tailscale_routing_enabled)
+
+- name: Read Tailscale status
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - status
+      - --json
+  register: tailscale_status
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  when: install_tailscale
+
+- name: Parse Tailscale state
+  ansible.builtin.set_fact:
+    tailscale_state: "{{ ((tailscale_status.stdout | default('{}', true)) | from_json).BackendState | default('') }}"
+  when: install_tailscale
+
+- name: Read Tailscale preferences
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - debug
+      - prefs
+  register: tailscale_prefs_raw
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  when: install_tailscale
+
+- name: Parse Tailscale preferences
+  ansible.builtin.set_fact:
+    tailscale_prefs: "{{ ((tailscale_prefs_raw.stdout | default('{}', true)) | from_json) }}"
+  when: install_tailscale
+
+- name: Normalize current Tailscale routing preferences
+  ansible.builtin.set_fact:
+    tailscale_current_advertise_routes: >-
+      {{ tailscale_prefs.AdvertiseRoutes | default([], true) | map('string') | list }}
+  when: install_tailscale
+
+- name: Derive current Tailscale exit-node and subnet route state
+  ansible.builtin.set_fact:
+    tailscale_current_exit_node_advertised: >-
+      {{ (tailscale_exit_node_routes | difference(tailscale_current_advertise_routes)) | length == 0 }}
+    tailscale_current_subnet_routes: >-
+      {{ (tailscale_current_advertise_routes | difference(tailscale_exit_node_routes)) | sort }}
+  when: install_tailscale
+
+- name: Enroll the node into Tailscale
+  ansible.builtin.command: >-
+    tailscale up --authkey={{ tailscale_auth_key | quote }} --hostname={{ tailscale_effective_hostname | quote }} {{ '--ssh' if tailscale_ssh else '--ssh=false' }} {{ '--accept-routes' if tailscale_accept_routes else '--accept-routes=false' }} {{ '--accept-dns' if tailscale_accept_dns else '--accept-dns=false' }} {{ '--advertise-exit-node' if tailscale_advertise_exit_node else '' }} {{ '--advertise-routes=' ~ (tailscale_advertise_routes | join(',')) if (tailscale_advertise_routes | length > 0) else '' }}
+  when:
+    - install_tailscale
+    - tailscale_auth_key is defined
+    - tailscale_auth_key | length > 0
+    - tailscale_status.rc != 0 or tailscale_state != 'Running'
+  changed_when: true
+
+- name: Reconcile Tailscale preferences on a running node
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - set
+      - "--hostname={{ tailscale_effective_hostname }}"
+      - "{{ '--ssh' if tailscale_ssh else '--ssh=false' }}"
+      - "{{ '--accept-routes' if tailscale_accept_routes else '--accept-routes=false' }}"
+      - "{{ '--accept-dns' if tailscale_accept_dns else '--accept-dns=false' }}"
+      - "{{ '--advertise-exit-node' if tailscale_advertise_exit_node else '--advertise-exit-node=false' }}"
+      - "--advertise-routes={{ tailscale_advertise_routes | join(',') }}"
+  when:
+    - install_tailscale
+    - tailscale_status.rc == 0
+    - tailscale_state == 'Running'
+    - (tailscale_prefs.RouteAll | default(false)) != tailscale_accept_routes or (tailscale_prefs.CorpDNS | default(false)) != tailscale_accept_dns or (tailscale_prefs.RunSSH | default(false)) != tailscale_ssh or (tailscale_prefs.Hostname | default('')) != tailscale_effective_hostname or tailscale_current_exit_node_advertised != tailscale_advertise_exit_node or tailscale_current_subnet_routes != (tailscale_advertise_routes | default([], true) | sort)
+  changed_when: true

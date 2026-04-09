@@ -1,0 +1,529 @@
+- name: Remove enterprise repositories when disabled
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/apt/sources.list.d/pve-enterprise.sources
+    - /etc/apt/sources.list.d/ceph.sources
+  register: pve_enterprise_repo_cleanup
+  when: not enable_enterprise_repo
+
+- name: Configure the Proxmox no-subscription repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/proxmox.sources
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      Types: deb
+      URIs: http://download.proxmox.com/debian/pve
+      Suites: {{ ansible_distribution_release }}
+      Components: pve-no-subscription
+      Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+  register: pve_no_subscription_repo
+  when: manage_no_subscription_repo
+
+- name: Refresh apt metadata after repository changes
+  ansible.builtin.apt:
+    update_cache: true
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - (pve_enterprise_repo_cleanup is defined and pve_enterprise_repo_cleanup.changed) or (pve_no_subscription_repo is defined and pve_no_subscription_repo.changed)
+
+- name: Remove os-prober on dedicated hypervisor hosts
+  ansible.builtin.apt:
+    name: os-prober
+    state: absent
+  when: remove_os_prober
+
+- name: Read current datacenter firewall options
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - get
+      - /cluster/firewall/options
+      - --output-format
+      - json
+  register: pve_cluster_firewall_raw
+  changed_when: false
+  check_mode: false
+
+- name: Parse datacenter firewall options
+  ansible.builtin.set_fact:
+    pve_cluster_firewall: "{{ pve_cluster_firewall_raw.stdout | from_json }}"
+
+- name: Converge datacenter firewall defaults
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - set
+      - /cluster/firewall/options
+      - --enable
+      - "{{ datacenter_firewall_enabled | ternary('1', '0') }}"
+      - --policy_in
+      - "{{ datacenter_firewall_input_policy }}"
+      - --policy_out
+      - "{{ datacenter_firewall_output_policy }}"
+  when:
+    - (pve_cluster_firewall.enable | default('0') | string) != (datacenter_firewall_enabled | ternary('1', '0')) or (pve_cluster_firewall.policy_in | default('')) != datacenter_firewall_input_policy or (pve_cluster_firewall.policy_out | default('')) != datacenter_firewall_output_policy
+  changed_when: true
+
+- name: Read current node firewall options
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - get
+      - "/nodes/{{ node_name }}/firewall/options"
+      - --output-format
+      - json
+  register: pve_node_firewall_raw
+  changed_when: false
+  check_mode: false
+
+- name: Parse node firewall options
+  ansible.builtin.set_fact:
+    pve_node_firewall: "{{ pve_node_firewall_raw.stdout | from_json }}"
+
+- name: Converge node firewall enablement
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - set
+      - "/nodes/{{ node_name }}/firewall/options"
+      - --enable
+      - "{{ node_firewall_enabled | ternary('1', '0') }}"
+  when:
+    - (pve_node_firewall.enable | default('0') | string) != (node_firewall_enabled | ternary('1', '0'))
+  changed_when: true
+
+- name: Detect systemd-boot cmdline file
+  ansible.builtin.stat:
+    path: /etc/kernel/cmdline
+  register: pve_cmdline_file
+
+- name: Detect GRUB defaults file
+  ansible.builtin.stat:
+    path: /etc/default/grub
+  register: pve_grub_file
+
+- name: Record the active bootloader style
+  ansible.builtin.set_fact:
+    pve_bootloader: >-
+      {{
+        'systemd-boot'
+        if pve_cmdline_file.stat.exists
+        else ('grub' if pve_grub_file.stat.exists else 'unknown')
+      }}
+
+- name: Read the systemd-boot kernel command line
+  ansible.builtin.slurp:
+    path: /etc/kernel/cmdline
+  register: pve_kernel_cmdline_raw
+  when:
+    - configure_iommu
+    - pve_bootloader == 'systemd-boot'
+
+- name: Compute the desired systemd-boot kernel command line
+  ansible.builtin.set_fact:
+    pve_kernel_cmdline_desired: >-
+      {{
+        (
+          (
+            (pve_kernel_cmdline_raw.content | b64decode | trim)
+            | regex_replace('(^| )pcie_aspm=off(?= |$)', '')
+            | regex_replace(' +', ' ')
+            | trim
+          )
+          + (' intel_iommu=on' if 'intel_iommu=on' not in (pve_kernel_cmdline_raw.content | b64decode | trim) else '')
+          + (' iommu=pt' if 'iommu=pt' not in (pve_kernel_cmdline_raw.content | b64decode | trim) else '')
+          + (
+            ' pcie_aspm=off'
+            if (
+              management_interface_tuning.pcie_aspm_off | default(false)
+              and 'pcie_aspm=off' not in (
+                (
+                  (pve_kernel_cmdline_raw.content | b64decode | trim)
+                  | regex_replace('(^| )pcie_aspm=off(?= |$)', '')
+                  | regex_replace(' +', ' ')
+                  | trim
+                )
+              )
+            )
+            else ''
+          )
+        ) | trim
+      }}
+  when:
+    - configure_iommu
+    - pve_bootloader == 'systemd-boot'
+
+- name: Persist systemd-boot kernel command line
+  ansible.builtin.copy:
+    dest: /etc/kernel/cmdline
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ pve_kernel_cmdline_desired }}\n"
+  notify: Refresh Proxmox Boot Tool
+  when:
+    - configure_iommu
+    - pve_bootloader == 'systemd-boot'
+
+- name: Read GRUB defaults
+  ansible.builtin.slurp:
+    path: /etc/default/grub
+  register: pve_grub_defaults_raw
+  when:
+    - configure_iommu
+    - pve_bootloader == 'grub'
+
+- name: Extract the current GRUB kernel arguments
+  ansible.builtin.set_fact:
+    pve_grub_cmdline_current: >-
+      {{
+        (
+          pve_grub_defaults_raw.content
+          | b64decode
+          | regex_search('^GRUB_CMDLINE_LINUX_DEFAULT="([^"]*)"$', '\1', multiline=True)
+          | default(['quiet'])
+        ) | first
+      }}
+  when:
+    - configure_iommu
+    - pve_bootloader == 'grub'
+
+- name: Compute the desired GRUB kernel arguments
+  ansible.builtin.set_fact:
+    pve_grub_cmdline_desired: >-
+      {{
+        (
+          (
+            pve_grub_cmdline_current
+            | regex_replace('(^| )pcie_aspm=off(?= |$)', '')
+            | regex_replace(' +', ' ')
+            | trim
+          )
+          + (' intel_iommu=on' if 'intel_iommu=on' not in pve_grub_cmdline_current else '')
+          + (' iommu=pt' if 'iommu=pt' not in pve_grub_cmdline_current else '')
+          + (
+            ' pcie_aspm=off'
+            if (
+              management_interface_tuning.pcie_aspm_off | default(false)
+              and 'pcie_aspm=off' not in (
+                (
+                  pve_grub_cmdline_current
+                  | regex_replace('(^| )pcie_aspm=off(?= |$)', '')
+                  | regex_replace(' +', ' ')
+                  | trim
+                )
+              )
+            )
+            else ''
+          )
+        ) | trim
+      }}
+  when:
+    - configure_iommu
+    - pve_bootloader == 'grub'
+
+- name: Persist GRUB kernel arguments
+  ansible.builtin.lineinfile:
+    path: /etc/default/grub
+    regexp: "^GRUB_CMDLINE_LINUX_DEFAULT="
+    line: 'GRUB_CMDLINE_LINUX_DEFAULT="{{ pve_grub_cmdline_desired }}"'
+  notify: Update Grub
+  when:
+    - configure_iommu
+    - pve_bootloader == 'grub'
+
+- name: Warn when bootloader detection is unsupported
+  ansible.builtin.debug:
+    msg: "Skipping IOMMU kernel arguments because the bootloader layout is unsupported: {{ pve_bootloader }}"
+  when:
+    - configure_iommu
+    - pve_bootloader == 'unknown'
+
+- name: Check that the management interface exists
+  ansible.builtin.stat:
+    path: "/sys/class/net/{{ management_interface }}"
+  register: management_interface_stat
+  when: management_interface is defined
+
+- name: Assert the management interface exists
+  ansible.builtin.assert:
+    that:
+      - management_interface_stat.stat.exists
+    fail_msg: "Configured management_interface {{ management_interface }} does not exist on the host."
+  when: management_interface is defined
+
+- name: Read management interface link flags
+  ansible.builtin.command:
+    argv:
+      - ip
+      - link
+      - set
+      - "{{ management_interface }}"
+      - up
+  changed_when: false
+  when: management_interface is defined
+
+- name: Read management interface link flags
+  ansible.builtin.command:
+    argv:
+      - ip
+      - -br
+      - link
+      - show
+      - "{{ management_interface }}"
+  register: management_interface_link
+  changed_when: false
+  check_mode: false
+  when: management_interface is defined
+
+- name: Read management interface carrier state
+  ansible.builtin.command:
+    argv:
+      - ethtool
+      - "{{ management_interface }}"
+  register: management_interface_ethtool
+  changed_when: false
+  check_mode: false
+  when: management_interface is defined
+
+- name: Assert the management interface has carrier
+  ansible.builtin.assert:
+    that:
+      - "'LOWER_UP' in management_interface_link.stdout"
+      - "'Link detected: yes' in management_interface_ethtool.stdout"
+    fail_msg: "Configured management_interface {{ management_interface }} is present but does not currently have carrier."
+  when: management_interface is defined
+
+- name: Render managed Proxmox network interfaces
+  ansible.builtin.template:
+    src: interfaces.j2
+    dest: /etc/network/interfaces
+    owner: root
+    group: root
+    mode: "0644"
+  register: proxmox_interfaces_config
+  when: management_interface is defined
+
+- name: Reload Proxmox networking in the background after interface changes
+  ansible.builtin.shell: "nohup sh -c 'sleep 2; ifreload -a' >/var/log/homelab-ifreload.log 2>&1 &"
+  changed_when: proxmox_interfaces_config.changed
+  when:
+    - management_interface is defined
+    - proxmox_interfaces_config.changed
+
+- name: Give ifreload time to start the cutover
+  ansible.builtin.pause:
+    seconds: 5
+  when:
+    - management_interface is defined
+    - proxmox_interfaces_config.changed
+
+- name: Wait for SSH after the network cutover
+  ansible.builtin.wait_for_connection:
+    timeout: 120
+  when:
+    - management_interface is defined
+    - proxmox_interfaces_config.changed
+
+- name: Ensure management NIC diagnostics log directory exists
+  ansible.builtin.file:
+    path: /var/log/homelab-management-nic
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: management_interface is defined
+
+- name: Ensure management NIC watchdog state directory exists
+  ansible.builtin.file:
+    path: /var/lib/homelab-management-nic
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: management_interface is defined
+
+- name: Install the management NIC tuning helper
+  ansible.builtin.template:
+    src: apply-management-nic-tuning.sh.j2
+    dest: /usr/local/sbin/apply-management-nic-tuning
+    owner: root
+    group: root
+    mode: "0755"
+  when: management_interface is defined
+
+- name: Install the management NIC diagnostics helper
+  ansible.builtin.template:
+    src: capture-management-nic-diagnostics.sh.j2
+    dest: /usr/local/sbin/capture-management-nic-diagnostics
+    owner: root
+    group: root
+    mode: "0755"
+  when: management_interface is defined
+
+- name: Install the management NIC watchdog helper
+  ansible.builtin.template:
+    src: management-nic-watchdog.sh.j2
+    dest: /usr/local/sbin/management-nic-watchdog
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - management_interface is defined
+    - management_interface_tuning.watchdog_enabled | default(false)
+
+- name: Install the management NIC tuning service
+  ansible.builtin.template:
+    src: management-nic-tuning.service.j2
+    dest: /etc/systemd/system/management-nic-tuning.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload Systemd
+  when:
+    - management_interface is defined
+    - management_interface_tuning.disable_eee | default(false)
+
+- name: Install the management NIC watchdog service
+  ansible.builtin.template:
+    src: management-nic-watchdog.service.j2
+    dest: /etc/systemd/system/management-nic-watchdog.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload Systemd
+  when:
+    - management_interface is defined
+    - management_interface_tuning.watchdog_enabled | default(false)
+
+- name: Install the management NIC watchdog timer
+  ansible.builtin.template:
+    src: management-nic-watchdog.timer.j2
+    dest: /etc/systemd/system/management-nic-watchdog.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload Systemd
+  when:
+    - management_interface is defined
+    - management_interface_tuning.watchdog_enabled | default(false)
+
+- name: Remove the management NIC tuning service when disabled
+  ansible.builtin.systemd_service:
+    name: management-nic-tuning.service
+    enabled: false
+    state: stopped
+  failed_when: false
+  when:
+    - management_interface is defined
+    - not (management_interface_tuning.disable_eee | default(false))
+
+- name: Stop the management NIC watchdog timer when disabled
+  ansible.builtin.systemd_service:
+    name: management-nic-watchdog.timer
+    enabled: false
+    state: stopped
+  failed_when: false
+  when:
+    - management_interface is defined
+    - not (management_interface_tuning.watchdog_enabled | default(false))
+
+- name: Remove the management NIC watchdog service unit when disabled
+  ansible.builtin.file:
+    path: /etc/systemd/system/management-nic-watchdog.service
+    state: absent
+  notify: Reload Systemd
+  when:
+    - management_interface is defined
+    - not (management_interface_tuning.watchdog_enabled | default(false))
+
+- name: Remove the management NIC watchdog timer unit when disabled
+  ansible.builtin.file:
+    path: /etc/systemd/system/management-nic-watchdog.timer
+    state: absent
+  notify: Reload Systemd
+  when:
+    - management_interface is defined
+    - not (management_interface_tuning.watchdog_enabled | default(false))
+
+- name: Remove the management NIC tuning service unit when disabled
+  ansible.builtin.file:
+    path: /etc/systemd/system/management-nic-tuning.service
+    state: absent
+  notify: Reload Systemd
+  when:
+    - management_interface is defined
+    - not (management_interface_tuning.disable_eee | default(false))
+
+- name: Enable and start the management NIC tuning service
+  ansible.builtin.systemd_service:
+    name: management-nic-tuning.service
+    daemon_reload: true
+    enabled: true
+    state: started
+  when:
+    - management_interface is defined
+    - management_interface_tuning.disable_eee | default(false)
+
+- name: Enable and start the management NIC watchdog timer
+  ansible.builtin.systemd_service:
+    name: management-nic-watchdog.timer
+    daemon_reload: true
+    enabled: true
+    state: started
+  when:
+    - management_interface is defined
+    - management_interface_tuning.watchdog_enabled | default(false)
+
+- name: Apply management NIC tuning immediately
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/apply-management-nic-tuning
+  changed_when: true
+  when:
+    - management_interface is defined
+    - management_interface_tuning.disable_eee | default(false)
+
+- name: Capture a management NIC diagnostics snapshot
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/capture-management-nic-diagnostics
+      - ansible-apply
+  changed_when: false
+  check_mode: false
+  when: management_interface is defined
+
+- name: Verify vmbr0 uses the configured management interface
+  ansible.builtin.command:
+    argv:
+      - bridge
+      - link
+      - show
+      - master
+      - "{{ management_bridge }}"
+  register: management_bridge_links
+  changed_when: false
+  check_mode: false
+  when: management_interface is defined
+
+- name: Assert vmbr0 uses the configured management interface
+  ansible.builtin.assert:
+    that:
+      - "management_interface in management_bridge_links.stdout"
+    fail_msg: "{{ management_bridge }} is not currently using {{ management_interface }} as its bridge port."
+  when: management_interface is defined
+
+- name: Run the management NIC watchdog once immediately
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/management-nic-watchdog
+  changed_when: false
+  check_mode: false
+  when:
+    - management_interface is defined
+    - management_interface_tuning.watchdog_enabled | default(false)

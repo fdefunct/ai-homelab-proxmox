@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Fail when generated artifacts are edited without updating source config."""
+
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class GeneratedRule:
+    pattern: re.Pattern[str]
+    source_template: str
+
+
+RULES: tuple[GeneratedRule, ...] = (
+    GeneratedRule(
+        pattern=re.compile(r"^ansible/inventories/([^/]+)/generated\.yml$"),
+        source_template="config/{env}.yaml",
+    ),
+    GeneratedRule(
+        pattern=re.compile(r"^terraform/envs/([^/]+)/generated\.auto\.tfvars\.json$"),
+        source_template="config/{env}.yaml",
+    ),
+)
+
+
+def git_changed_files(staged: bool, base: str | None, head: str | None) -> list[str]:
+    cmd = ["git", "diff", "--name-only"]
+    if staged:
+        cmd.append("--cached")
+    elif base and head:
+        cmd.extend([base, head])
+    elif base:
+        cmd.append(base)
+
+    output = subprocess.check_output(cmd, text=True)
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Detect manual edits in generated files when source config was not changed.",
+    )
+    parser.add_argument("--staged", action="store_true", help="Check staged changes (for pre-commit).")
+    parser.add_argument("--base", help="Base git revision for range checks.")
+    parser.add_argument("--head", help="Head git revision for range checks.")
+    args = parser.parse_args()
+
+    changed_files = set(git_changed_files(staged=args.staged, base=args.base, head=args.head))
+    violations: list[tuple[str, str]] = []
+
+    for path in sorted(changed_files):
+        for rule in RULES:
+            match = rule.pattern.match(path)
+            if not match:
+                continue
+            env_name = match.group(1)
+            source_path = rule.source_template.format(env=env_name)
+            if source_path not in changed_files:
+                violations.append((path, source_path))
+            break
+
+    if not violations:
+        return 0
+
+    print("ERROR: Generated files were edited, but their source config files were not changed.")
+    print("\nGenerated files must be derived from config/<env>.yaml, not hand-edited.")
+    for generated_path, source_path in violations:
+        print(f"  - {generated_path} (expected source change: {source_path})")
+    print("\nRemediation:")
+    seen_envs: set[str] = set()
+    for _, source_path in violations:
+        env_name = Path(source_path).stem
+        if env_name in seen_envs:
+            continue
+        seen_envs.add(env_name)
+        print(f"  1) Edit {source_path}")
+        print(f"  2) Run: make ENV={env_name} generate-config")
+    print("  3) Stage regenerated artifacts: git add ansible/inventories/*/generated.yml terraform/envs/*/generated.auto.tfvars.json")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

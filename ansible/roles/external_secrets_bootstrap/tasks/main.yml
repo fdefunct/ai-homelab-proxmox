@@ -1,0 +1,128 @@
+# Intentional bootstrap exception: 1Password Connect needs its token and
+# credentials before External Secrets can reconcile the rest of the secret
+# material from 1Password.
+- name: Require 1Password Connect bootstrap credentials
+  ansible.builtin.assert:
+    that:
+      - onepassword_connect_server_token | length > 0
+      - onepassword_connect_credentials_json | length > 0
+    fail_msg: >-
+      Set onepassword_connect_server_token and onepassword_connect_credentials_json via ansible/secrets.yml before running this playbook.
+  no_log: true
+
+- name: Wait for 1Password Connect namespace
+  ansible.builtin.command:
+    cmd: /usr/local/bin/k3s kubectl get namespace {{ external_secrets_bootstrap_namespace }}
+  register: external_secrets_namespace_result
+  retries: 30
+  delay: 10
+  until: external_secrets_namespace_result.rc == 0
+  changed_when: false
+
+- name: Set 1Password Connect bootstrap token checksum
+  ansible.builtin.set_fact:
+    external_secrets_connect_token_checksum: "{{ onepassword_connect_server_token | hash('sha256') }}"
+  no_log: true
+
+- name: Read current 1Password Connect token checksum
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ external_secrets_bootstrap_namespace }} get secret {{ external_secrets_bootstrap_token_secret_name }} -o jsonpath={.metadata.annotations.homelab\\.io/token-checksum}
+  register: external_secrets_connect_token_secret_checksum_result
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Determine whether 1Password Connect token update is required
+  ansible.builtin.set_fact:
+    external_secrets_connect_token_secret_update_required: >-
+      {{ external_secrets_connect_token_secret_checksum_result.rc != 0 or
+         external_secrets_connect_token_secret_checksum_result.stdout != external_secrets_connect_token_checksum }}
+  no_log: true
+
+- name: Apply 1Password Connect token secret
+  ansible.builtin.shell: |
+    set -o pipefail
+    cat <<EOF | /usr/local/bin/k3s kubectl apply -f -
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: {{ external_secrets_bootstrap_token_secret_name }}
+      namespace: {{ external_secrets_bootstrap_namespace }}
+      annotations:
+        homelab.io/token-checksum: "{{ external_secrets_connect_token_checksum }}"
+    stringData:
+      {{ external_secrets_bootstrap_token_secret_key }}: "{{ onepassword_connect_server_token }}"
+    EOF
+  args:
+    executable: /bin/bash
+  register: external_secrets_connect_token_secret_result
+  changed_when: >
+    'created' in external_secrets_connect_token_secret_result.stdout or 'configured' in external_secrets_connect_token_secret_result.stdout
+  when: external_secrets_connect_token_secret_update_required
+  no_log: true
+
+- name: Set 1Password Connect credentials checksum
+  ansible.builtin.set_fact:
+    external_secrets_connect_credentials_checksum: "{{ onepassword_connect_credentials_json | hash('sha256') }}"
+  no_log: true
+
+- name: Read current 1Password Connect credentials checksum
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ external_secrets_bootstrap_namespace }} get secret {{ external_secrets_bootstrap_credentials_secret_name }} -o jsonpath={.metadata.annotations.homelab\\.io/credentials-checksum}
+  register: external_secrets_connect_credentials_secret_checksum_result
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Determine whether 1Password Connect credentials update is required
+  ansible.builtin.set_fact:
+    external_secrets_connect_credentials_secret_update_required: >-
+      {{ external_secrets_connect_credentials_secret_checksum_result.rc != 0 or
+         external_secrets_connect_credentials_secret_checksum_result.stdout != external_secrets_connect_credentials_checksum }}
+  no_log: true
+
+- name: Apply 1Password Connect credentials secret
+  ansible.builtin.shell: |
+    set -o pipefail
+    cat <<EOF | /usr/local/bin/k3s kubectl apply -f -
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: {{ external_secrets_bootstrap_credentials_secret_name }}
+      namespace: {{ external_secrets_bootstrap_namespace }}
+      annotations:
+        homelab.io/credentials-checksum: "{{ external_secrets_connect_credentials_checksum }}"
+    stringData:
+      {{ external_secrets_bootstrap_credentials_secret_key }}: |
+    {{ onepassword_connect_credentials_json | indent(8, true) }}
+    EOF
+  args:
+    executable: /bin/bash
+  register: external_secrets_connect_credentials_secret_result
+  changed_when: >
+    'created' in external_secrets_connect_credentials_secret_result.stdout or 'configured' in external_secrets_connect_credentials_secret_result.stdout
+  when: external_secrets_connect_credentials_secret_update_required
+  no_log: true
+
+- name: Wait for 1Password Connect deployment readiness
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ external_secrets_bootstrap_namespace }} get deployment {{ external_secrets_bootstrap_deployment_name }}
+  register: external_secrets_deployment_result
+  retries: 30
+  delay: 10
+  until: external_secrets_deployment_result.rc == 0
+  changed_when: false
+
+- name: Wait for 1Password Connect deployment rollout
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/bin/k3s kubectl -n {{ external_secrets_bootstrap_namespace }} rollout status deployment/{{ external_secrets_bootstrap_deployment_name }} --timeout=300s
+  register: external_secrets_rollout_result
+  retries: 30
+  delay: 10
+  until: external_secrets_rollout_result.rc == 0
+  changed_when: false
+  no_log: true

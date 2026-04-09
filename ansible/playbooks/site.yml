@@ -1,0 +1,63 @@
+- name: Bootstrap the Proxmox foundation node
+  hosts: "{{ bootstrap_group | default('proxmox') }}"
+  become: true
+  gather_facts: true
+  roles:
+    - role: common
+    - role: proxmox_host
+    - role: proxmox_storage
+    - role: proxmox_backup
+    - role: tailscale
+    - role: host_observability
+
+- name: Bootstrap Tailscale appliance containers
+  hosts: tailscale_appliances
+  become: true
+  gather_facts: false
+  roles:
+    - role: lxc_tailscale_appliance
+    - role: tailscale
+
+- name: Prepare homelab-core guest nodes
+  hosts: k3s
+  become: true
+  gather_facts: true
+  roles:
+    - role: common
+    - role: k3s_common
+    - role: tailscale
+      vars:
+        tailscale_accept_dns: true
+
+- name: Prepare OpenClaw gateway guest nodes
+  hosts: openclaw_gateways
+  become: true
+  gather_facts: true
+  roles:
+    - role: common
+    - role: openclaw_gateway_prep
+    - role: tailscale
+      when: install_tailscale | default(false)
+
+- name: Bootstrap the homelab-core k3s server
+  hosts: k3s_server
+  become: true
+  gather_facts: true
+  roles:
+    - role: k3s_server
+
+- name: Join homelab-core k3s agents
+  hosts: k3s_agents
+  become: true
+  gather_facts: true
+  roles:
+    - role: k3s_agent
+
+- name: Finalize homelab-core bootstrap
+  hosts: k3s_server
+  become: true
+  gather_facts: true
+  roles:
+    - role: k3s_cluster_finalize
+    - role: argocd
+    - role: external_secrets_bootstrap

@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Fail when Terraform runtime artifacts are tracked in git."""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+
+
+TRACKED_RUNTIME_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(^|/)\.terraform($|/)"),
+    re.compile(r"\.tfstate(\..+)?$"),
+)
+
+
+def main() -> int:
+    output = subprocess.check_output(["git", "ls-files", "-z"], text=False)
+    tracked_paths = [path for path in output.decode().split("\0") if path]
+
+    violations = [
+        path
+        for path in tracked_paths
+        if any(pattern.search(path) for pattern in TRACKED_RUNTIME_PATTERNS)
+    ]
+
+    if not violations:
+        return 0
+
+    print("ERROR: Terraform runtime artifacts must not be tracked in git.")
+    print()
+    print("These files are allowed locally when ignored, but they must stay untracked:")
+    for path in sorted(violations):
+        print(f"  - {path}")
+    print()
+    print("Remediation:")
+    print("  1) Remove the file from git tracking.")
+    print("  2) Keep the local copy only if needed for local Terraform operations.")
+    print("  3) Re-run: make terraform-runtime-artifacts-check")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

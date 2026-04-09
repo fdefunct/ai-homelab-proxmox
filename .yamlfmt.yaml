@@ -1,0 +1,24 @@
+gitignore_excludes: true
+line_ending: lf
+match_type: doublestar
+exclude:
+  - .ansible/**
+  - .git/**
+  - .terraform/**
+  - .venv/**
+  - ansible/artifacts/**
+  - ansible/inventories/*/generated.yml
+  - build/**
+  - dist/**
+  - kubernetes/manifests/homepage/20-homepage-assets.yaml
+  - kubernetes/manifests/homepage/assets/**
+  - node_modules/**
+  - terraform/.terraform/**
+  - terraform/envs/*/*.rendered.tfvars
+  - terraform/envs/*/generated.auto.tfvars.json
+formatter:
+  eof_newline: true
+  include_document_start: false
+  indent: 2
+  line_ending: lf
+  retain_line_breaks: true

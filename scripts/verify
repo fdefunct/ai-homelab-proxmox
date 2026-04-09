@@ -1,0 +1,85 @@
+#!/bin/bash
+set -euo pipefail
+
+ENV_NAME="${ENV_NAME:-home}"
+TF_ENV_DIR="terraform/envs/$ENV_NAME"
+ANSIBLE_ENV_DIR="ansible/inventories/$ENV_NAME"
+
+require_file() {
+  path="$1"
+  if [ ! -f "$path" ]; then
+    printf 'Missing required file: %s\n' "$path" >&2
+    exit 1
+  fi
+}
+
+require_cmd() {
+  cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    printf 'Missing required command: %s\n' "$cmd" >&2
+    exit 1
+  fi
+}
+
+require_cmd terraform
+require_cmd tflint
+require_cmd shellcheck
+require_cmd actionlint
+require_cmd npm
+require_cmd mktemp
+require_file .venv/bin/ansible-playbook
+require_file .venv/bin/ansible-lint
+require_file .venv/bin/checkov
+require_file .venv/bin/gitleaks
+require_file .venv/bin/kubeconform
+require_file .venv/bin/yamlfmt
+require_file .venv/bin/yamllint
+require_file package.json
+require_file package-lock.json
+require_cmd op
+require_file "$TF_ENV_DIR/secrets.tfvars.template"
+require_file "$TF_ENV_DIR/generated.auto.tfvars.json"
+require_file "$ANSIBLE_ENV_DIR/generated.yml"
+require_file ansible/secrets.yml
+require_file ansible/bootstrap-ssh-private-key
+require_file ansible/bootstrap-ssh-user
+require_file ansible/operator-ssh-private-key
+require_file ansible/argocd-repo-private-key
+
+if ! op account list >/dev/null 2>&1; then
+  printf "1Password CLI is not signed in. Run 'op signin' first.\n" >&2
+  exit 1
+fi
+
+TMP_ANSIBLE_SECRETS="$(mktemp /tmp/homelab-pve-verify-ansible-secrets.XXXXXX)"
+TMP_ANSIBLE_KEY="$(mktemp /tmp/homelab-pve-verify-bootstrap-key.XXXXXX)"
+TMP_ANSIBLE_OPERATOR_KEY="$(mktemp /tmp/homelab-pve-verify-operator-key.XXXXXX)"
+TMP_ARGOCD_REPO_KEY="$(mktemp /tmp/homelab-pve-verify-argocd-repo-key.XXXXXX)"
+TMP_TERRAFORM_SECRETS="$(mktemp /tmp/homelab-pve-verify-terraform-secrets.XXXXXX)"
+
+cleanup() {
+  rm -f "$TMP_ANSIBLE_SECRETS" "$TMP_ANSIBLE_KEY" "$TMP_ANSIBLE_OPERATOR_KEY" "$TMP_ARGOCD_REPO_KEY" "$TMP_TERRAFORM_SECRETS"
+}
+trap cleanup EXIT INT TERM
+
+./scripts/render-ansible-secrets > "$TMP_ANSIBLE_SECRETS"
+./scripts/render-ansible-ssh-key > "$TMP_ANSIBLE_KEY"
+./scripts/render-ansible-operator-ssh-key > "$TMP_ANSIBLE_OPERATOR_KEY"
+./scripts/render-argocd-repo-private-key > "$TMP_ARGOCD_REPO_KEY"
+./scripts/render-terraform-secrets > "$TMP_TERRAFORM_SECRETS"
+./scripts/assert-rendered-secrets "$TMP_ANSIBLE_SECRETS" "Rendered Ansible variables"
+./scripts/assert-rendered-secrets "$TMP_ANSIBLE_KEY" "Rendered bootstrap SSH key"
+./scripts/assert-rendered-secrets "$TMP_ANSIBLE_OPERATOR_KEY" "Rendered operator SSH key"
+./scripts/assert-rendered-secrets "$TMP_ARGOCD_REPO_KEY" "Rendered Argo CD repository key"
+./scripts/assert-rendered-secrets "$TMP_TERRAFORM_SECRETS" "Rendered Terraform variables"
+
+ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_HOME=.ansible ANSIBLE_LOCAL_TEMP=.ansible/tmp ./.venv/bin/ansible-playbook --version >/dev/null
+.venv/bin/checkov --version >/dev/null
+.venv/bin/gitleaks version >/dev/null
+.venv/bin/kubeconform -v >/dev/null
+.venv/bin/yamlfmt -version >/dev/null
+terraform version >/dev/null
+actionlint --version >/dev/null
+npm exec -- prettier --version >/dev/null
+
+printf 'Verification complete\n'

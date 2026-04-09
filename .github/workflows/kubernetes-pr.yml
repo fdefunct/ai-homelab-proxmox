@@ -1,0 +1,132 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Kubernetes PR
+
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - "kubernetes/**"
+
+concurrency:
+  group: kubernetes-pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  ENV: home
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      # v6
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+
+      - name: Load shared tool versions
+        run: |
+          cat ./tool-versions.env >> "$GITHUB_ENV"
+          . ./tool-versions.env
+          printf 'VENV_CACHE_KEY=venv-Linux-py%s\n' "$PYTHON_VERSION" >> "$GITHUB_ENV"
+
+      - name: Get changed Kubernetes files
+        id: changed-files
+        # v47
+        uses: tj-actions/changed-files@2bb135777322059ee3a3c9239999b159ff49febc
+        with:
+          files: |
+            kubernetes/**
+      - uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        id: cache-venv
+        with:
+          path: .venv
+          key: ${{ env.VENV_CACHE_KEY }}-${{ hashFiles('requirements/bootstrap.txt') }}
+
+      - name: Create virtualenv and install dependencies
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements/bootstrap.txt
+
+      - name: Generate derived config artifacts
+        run: make ENV=${{ env.ENV }} generate-config
+
+      - name: Install kubeconform
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          ./scripts/download-github-release-asset \
+            yannh/kubeconform \
+            "${{ env.KUBECONFORM_VERSION }}" \
+            "kubeconform-linux-amd64.tar.gz" \
+            CHECKSUMS \
+            "$RUNNER_TEMP/kubeconform.tar.gz"
+          tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" -C "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Record changed files
+        run: |
+          mkdir -p "$RUNNER_TEMP/kubernetes-validation"
+          printf '%s\n' '${{ steps.changed-files.outputs.all_changed_files }}' | tr ' ' '\n' \
+            > "$RUNNER_TEMP/kubernetes-validation/changed-files.txt"
+
+      - name: Kubernetes validation
+        id: kubernetes-validate
+        continue-on-error: true
+        run: |
+          make ENV=${{ env.ENV }} kubernetes-validate | tee "$RUNNER_TEMP/kubernetes-validation/validation.log"
+
+      - name: Kubeconform validation
+        id: kubeconform-validate
+        continue-on-error: true
+        run: |
+          make ENV=${{ env.ENV }} kubeconform-validate | tee -a "$RUNNER_TEMP/kubernetes-validation/validation.log"
+
+      - name: Build Kubernetes PR summary
+        id: summary
+        if: always()
+        env:
+          KUBERNETES_VALIDATE_OUTCOME: ${{ steps.kubernetes-validate.outcome }}
+          KUBECONFORM_VALIDATE_OUTCOME: ${{ steps.kubeconform-validate.outcome }}
+          WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          .venv/bin/python ./scripts/summarize-kubernetes-pr \
+            --changed-files "$RUNNER_TEMP/kubernetes-validation/changed-files.txt" \
+            --kubernetes-validate "$KUBERNETES_VALIDATE_OUTCOME" \
+            --kubeconform-validate "$KUBECONFORM_VALIDATE_OUTCOME" \
+            --workflow-run-url "$WORKFLOW_RUN_URL" \
+            > "$RUNNER_TEMP/kubernetes-validation/pr-summary.md"
+          {
+            echo 'summary<<EOF'
+            cat "$RUNNER_TEMP/kubernetes-validation/pr-summary.md"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Comment PR summary
+        if: always()
+        # v3.0.3
+        uses: marocchino/sticky-pull-request-comment@159c67730ed0a9748d0d480c02879eaf352efd8e
+        with:
+          header: kubernetes-validation
+          message: ${{ steps.summary.outputs.summary }}
+
+      - name: Upload validation artifacts
+        if: always()
+        # v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: kubernetes-validation
+          path: |
+            ${{ runner.temp }}/kubernetes-validation/
+            ansible/inventories/
+            terraform/envs/home/generated.auto.tfvars.json
+
+      - name: Fail if validation failed
+        if: always() && (steps.kubernetes-validate.outcome == 'failure' || steps.kubeconform-validate.outcome == 'failure')
+        run: exit 1

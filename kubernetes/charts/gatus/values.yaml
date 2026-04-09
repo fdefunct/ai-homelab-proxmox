@@ -1,0 +1,232 @@
+deployment:
+  strategy: Recreate
+
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClassName: longhorn
+  accessModes:
+    - ReadWriteOnce
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+service:
+  type: ClusterIP
+
+serviceMonitor:
+  enabled: false
+
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-cloudflare
+  hosts:
+    - status.example.com
+  tls:
+    - secretName: gatus-tls
+      hosts:
+        - status.example.com
+
+config:
+  storage:
+    type: sqlite
+    path: /data/data.db
+  web:
+    title: AI Homelab Status
+  endpoints:
+    - name: Argo CD
+      group: operator apps
+      url: http://argocd-server.argocd.svc.cluster.local/api/version
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: Homepage
+      group: operator apps
+      url: http://homepage.homepage.svc.cluster.local:3000
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: Home Assistant
+      group: operator apps
+      url: https://ha.example.com/
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: Longhorn
+      group: operator apps
+      url: https://longhorn.core.example.com/
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: Mealie
+      group: operator apps
+      url: https://mealie.example.com/
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: NetBox
+      group: operator apps
+      url: https://netbox.example.com/
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: n8n
+      group: operator apps
+      url: http://n8n.n8n.svc.cluster.local:5678/healthz
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: Velero
+      group: platform dependencies
+      url: http://velero.velero.svc.cluster.local:8085/metrics
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: Rancher
+      group: platform dependencies
+      url: https://rancher.example.com/
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: PBS-0
+      group: platform dependencies
+      url: https://pbs-0.example.com:8007/
+      interval: 60s
+      client:
+        insecure: true
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: Grafana
+      group: monitoring
+      url: https://grafana.ops.example.com/api/health
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: Prometheus
+      group: monitoring
+      url: https://prometheus.ops.example.com/-/healthy
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: Loki
+      group: monitoring
+      url: https://loki.ops.example.com/loki/api/v1/status/buildinfo
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: PVE SSH
+      group: infrastructure
+      url: tcp://pve-0:22
+      interval: 60s
+      conditions:
+        - "[CONNECTED] == true"
+    - name: PVE HTTPS
+      group: infrastructure
+      url: https://pve-0:8006
+      interval: 60s
+      client:
+        insecure: true
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: PVE Node Exporter
+      group: infrastructure
+      url: http://pve-0:9100/metrics
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: NAS-A
+      group: infrastructure
+      url: http://nas-a.example.com:8480
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: NAS-B
+      group: infrastructure
+      url: http://nas-b.example.com:8480
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: Alpha
+      group: openclaw gateways
+      url: https://gw.alpha.example.com/
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: Beta
+      group: openclaw gateways
+      url: https://gw.beta.example.com/
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: Gamma
+      group: openclaw gateways
+      url: https://gw.gamma.example.com/
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: homelab-core-server-0
+      group: infrastructure
+      url: tcp://192.0.2.61:22
+      interval: 60s
+      conditions:
+        - "[CONNECTED] == true"
+    - name: homelab-core-worker-0
+      group: infrastructure
+      url: tcp://192.0.2.62:22
+      interval: 60s
+      conditions:
+        - "[CONNECTED] == true"
+    - name: homelab-core-worker-1
+      group: infrastructure
+      url: tcp://192.0.2.63:22
+      interval: 60s
+      conditions:
+        - "[CONNECTED] == true"
+    - name: Cloudflare
+      group: external
+      url: https://cloudflare.com/cdn-cgi/trace
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: Google
+      group: external
+      url: https://www.google.com
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+    - name: GitHub
+      group: external
+      url: https://github.com
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"

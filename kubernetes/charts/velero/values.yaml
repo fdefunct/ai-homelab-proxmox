@@ -1,0 +1,53 @@
+initContainers:
+  - name: velero-plugin-for-aws
+    image: docker.io/velero/velero-plugin-for-aws:v1.14.0
+    imagePullPolicy: IfNotPresent
+    volumeMounts:
+      - mountPath: /target
+        name: plugins
+
+credentials:
+  useSecret: true
+  existingSecret: velero-backblaze-credentials
+
+backupsEnabled: false
+snapshotsEnabled: false
+deployNodeAgent: false
+
+extraObjects:
+  - apiVersion: velero.io/v1
+    kind: Schedule
+    metadata:
+      name: daily
+      namespace: velero
+    spec:
+      schedule: "17 3 * * *"
+      template:
+        storageLocation: default
+        snapshotVolumes: false
+        includeClusterResources: true
+        ttl: 168h0m0s
+  - apiVersion: velero.io/v1
+    kind: Schedule
+    metadata:
+      name: weekly
+      namespace: velero
+    spec:
+      schedule: "30 3 * * 0"
+      template:
+        storageLocation: default
+        snapshotVolumes: false
+        includeClusterResources: true
+        ttl: 720h0m0s
+  - apiVersion: velero.io/v1
+    kind: Schedule
+    metadata:
+      name: monthly
+      namespace: velero
+    spec:
+      schedule: "45 3 1 * *"
+      template:
+        storageLocation: default
+        snapshotVolumes: false
+        includeClusterResources: true
+        ttl: 8760h0m0s

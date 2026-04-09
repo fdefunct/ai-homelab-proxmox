@@ -1,0 +1,77 @@
+- name: Check whether k3s is already installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_server_binary
+
+- name: Download k3s installer
+  ansible.builtin.get_url:
+    url: https://get.k3s.io
+    dest: /tmp/get-k3s.sh
+    mode: "0755"
+  when: not k3s_server_binary.stat.exists
+
+- name: Ensure k3s config directory exists
+  ansible.builtin.file:
+    path: "{{ k3s_server_config_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Render k3s server config
+  ansible.builtin.copy:
+    dest: "{{ k3s_server_config_path }}"
+    mode: "0600"
+    content: |
+      node-name: {{ inventory_hostname }}
+      node-ip: {{ ansible_host }}
+      advertise-address: {{ ansible_host }}
+      write-kubeconfig-mode: {{ k3s_write_kubeconfig_mode | to_json }}
+      token: {{ k3s_cluster_token | to_json }}
+      cluster-init: {{ k3s_cluster_init | ternary('true', 'false') }}
+      cluster-cidr: {{ k3s_cluster_cidr | to_json }}
+      service-cidr: {{ k3s_service_cidr | to_json }}
+      cluster-dns: {{ k3s_cluster_dns | to_json }}
+      etcd-snapshot-schedule-cron: {{ k3s_server_etcd_snapshot_schedule_cron | to_json }}
+      etcd-snapshot-retention: {{ k3s_server_etcd_snapshot_retention }}
+      etcd-s3: true
+      etcd-s3-bucket: {{ velero_s3_bucket | to_json }}
+      etcd-s3-endpoint: {{ velero_s3_endpoint | regex_replace('^https://', '') | to_json }}
+      etcd-s3-endpoint-ca: ""
+      etcd-s3-region: {{ velero_s3_region | to_json }}
+      etcd-s3-access-key: {{ velero_s3_access_key | to_json }}
+      etcd-s3-secret-key: {{ velero_s3_secret_key | to_json }}
+      kubelet-arg:
+        - {{ ('resolv-conf=' ~ k3s_server_resolv_conf_path) | to_json }}
+      disable:
+      {% for component in k3s_server_disable_components %}
+        - {{ component }}
+      {% endfor %}
+      {% if k3s_server_taints | length > 0 %}
+      node-taint:
+      {% for taint in k3s_server_taints %}
+        - {{ taint }}
+      {% endfor %}
+      {% endif %}
+  notify: Restart k3s
+
+- name: Install k3s server
+  ansible.builtin.command:
+    cmd: /tmp/get-k3s.sh
+    creates: /usr/local/bin/k3s
+  environment:
+    INSTALL_K3S_CHANNEL: "{{ k3s_channel }}"
+    INSTALL_K3S_EXEC: "server"
+    INSTALL_K3S_VERSION: "{{ k3s_version }}"
+
+- name: Ensure k3s service is enabled
+  ansible.builtin.service:
+    name: k3s
+    enabled: true
+    state: started
+
+- name: Flush k3s server handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for kubeconfig
+  ansible.builtin.wait_for:
+    path: /etc/rancher/k3s/k3s.yaml
+    timeout: 120

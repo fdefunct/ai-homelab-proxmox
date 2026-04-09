@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/argoproj.io/application_v1alpha1.json
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root-app
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  ignoreDifferences:
+    - group: argoproj.io
+      kind: Application
+      jsonPointers:
+        - /status
+        - /operation
+      jqPathExpressions:
+        - '.metadata.annotations["argocd.argoproj.io/tracking-id"]'
+        - '.metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"]'
+        - '.metadata.finalizers[] | select(. == "post-delete-finalizer.argocd.argoproj.io")'
+        - '.metadata.finalizers[] | select(. == "post-delete-finalizer.argocd.argoproj.io/cleanup")'
+  source:
+    repoURL: git@github.com:your-github-user/ai-homelab-proxmox.git
+    targetRevision: main
+    path: kubernetes/apps/platform
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

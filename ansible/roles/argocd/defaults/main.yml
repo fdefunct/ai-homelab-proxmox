@@ -1,0 +1,10 @@
+argocd_version: "v3.2.1"
+argocd_namespace: "argocd"
+argocd_install_manifest_url: "https://raw.githubusercontent.com/argoproj/argo-cd/{{ argocd_version }}/manifests/install.yaml"
+argocd_root_app_manifest: "{{ playbook_dir }}/../../kubernetes/apps/root-app.yaml"
+argocd_remote_manifest_dir: "/var/tmp/argocd-bootstrap"
+argocd_admin_username: "admin"
+argocd_server_insecure: true
+argocd_repo_secret_name: "platform-repo"
+argocd_repo_url: ""
+argocd_bootstrap_state_configmap: "argocd-bootstrap-state"

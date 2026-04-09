@@ -1,0 +1,18 @@
+- name: Refresh Proxmox Boot Tool
+  ansible.builtin.command:
+    argv:
+      - proxmox-boot-tool
+      - refresh
+  changed_when: true
+  when: pve_bootloader | default('unknown') == 'systemd-boot'
+
+- name: Update Grub
+  ansible.builtin.command:
+    argv:
+      - update-grub
+  changed_when: true
+  when: pve_bootloader | default('unknown') == 'grub'
+
+- name: Reload Systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true

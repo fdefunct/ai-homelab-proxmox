@@ -1,0 +1,310 @@
+- name: Assert this gateway defines a bot account
+  ansible.builtin.assert:
+    that:
+      - host_openclaw_bot_account is mapping
+      - host_openclaw_bot_account.username is string
+      - host_openclaw_bot_account.username | length > 0
+      - host_openclaw_bot_account.public_key is string
+      - host_openclaw_bot_account.public_key | length > 0
+    fail_msg: "openclaw gateways must define host_openclaw_bot_accounts[inventory_hostname]"
+
+- name: Read the optional Caddy config for this gateway
+  ansible.builtin.set_fact:
+    openclaw_gateway_caddy: "{{ gateway_caddy | default({}) }}"
+    openclaw_gateway_caddy_enabled: "{{ ((gateway_caddy | default({})).enabled | default(false)) | bool }}"
+
+- name: Assert the gateway Caddy settings are complete when enabled
+  ansible.builtin.assert:
+    that:
+      - openclaw_gateway_caddy is mapping
+      - openclaw_gateway_caddy.hostname is string
+      - openclaw_gateway_caddy.hostname | length > 0
+      - openclaw_gateway_caddy.upstream is string
+      - openclaw_gateway_caddy.upstream | length > 0
+      - (openclaw_gateway_cloudflare_api_token | default('')) | length > 0
+    fail_msg: "gateway_caddy and openclaw_gateway_cloudflare_api_token must be defined when gateway Caddy is enabled"
+  when: openclaw_gateway_caddy_enabled
+
+- name: Install Homebrew prerequisites for OpenClaw gateways
+  ansible.builtin.apt:
+    name:
+      - build-essential
+      - file
+      - procps
+      - unzip
+    state: present
+
+- name: Check whether Homebrew is already working
+  ansible.builtin.command:
+    argv:
+      - /home/linuxbrew/.linuxbrew/bin/brew
+      - --version
+  register: openclaw_homebrew_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Install Homebrew for the gateway bot user
+  ansible.builtin.shell: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  become: true
+  become_user: "{{ host_openclaw_bot_account.username }}"
+  environment:
+    CI: "1"
+    NONINTERACTIVE: "1"
+  changed_when: true
+  when: openclaw_homebrew_check.rc != 0
+
+- name: Remove unmanaged Homebrew shellenv lines from .profile
+  ansible.builtin.lineinfile:
+    path: "/home/{{ host_openclaw_bot_account.username }}/.profile"
+    regexp: '^eval "\$\(/home/linuxbrew/\.linuxbrew/bin/brew shellenv bash\)"$'
+    state: absent
+
+- name: Remove unmanaged Homebrew shellenv lines from .bashrc
+  ansible.builtin.lineinfile:
+    path: "/home/{{ host_openclaw_bot_account.username }}/.bashrc"
+    regexp: '^eval "\$\(/home/linuxbrew/\.linuxbrew/bin/brew shellenv bash\)"$'
+    state: absent
+
+- name: Ensure Homebrew shellenv is configured in .profile
+  ansible.builtin.blockinfile:
+    path: "/home/{{ host_openclaw_bot_account.username }}/.profile"
+    marker: "# {mark} ANSIBLE MANAGED OPENCLAW HOMEBREW"
+    create: true
+    owner: "{{ host_openclaw_bot_account.username }}"
+    group: "{{ host_openclaw_bot_account.username }}"
+    mode: "0644"
+    block: |
+      if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+      fi
+
+- name: Ensure Homebrew shellenv is configured in .bashrc
+  ansible.builtin.blockinfile:
+    path: "/home/{{ host_openclaw_bot_account.username }}/.bashrc"
+    marker: "# {mark} ANSIBLE MANAGED OPENCLAW HOMEBREW"
+    create: true
+    owner: "{{ host_openclaw_bot_account.username }}"
+    group: "{{ host_openclaw_bot_account.username }}"
+    mode: "0644"
+    block: |
+      if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+      fi
+
+- name: Verify Homebrew is available in a fresh bot-user shell
+  ansible.builtin.command:
+    argv:
+      - /bin/bash
+      - -lc
+      - brew --version
+  become: true
+  become_user: "{{ host_openclaw_bot_account.username }}"
+  changed_when: false
+  check_mode: false
+
+- name: Check whether 1Password CLI is already installed with Homebrew
+  ansible.builtin.command:
+    argv:
+      - /bin/bash
+      - -lc
+      - brew list --cask 1password-cli
+  become: true
+  become_user: "{{ host_openclaw_bot_account.username }}"
+  register: openclaw_gateway_1password_cli_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Install 1Password CLI with Homebrew for the gateway bot user
+  ansible.builtin.command:
+    argv:
+      - /bin/bash
+      - -lc
+      - brew install --cask 1password-cli
+  become: true
+  become_user: "{{ host_openclaw_bot_account.username }}"
+  changed_when: true
+  when: openclaw_gateway_1password_cli_check.rc != 0
+
+- name: Verify 1Password CLI is available in a fresh bot-user shell
+  ansible.builtin.command:
+    argv:
+      - /bin/bash
+      - -lc
+      - op --version
+  become: true
+  become_user: "{{ host_openclaw_bot_account.username }}"
+  changed_when: false
+  check_mode: false
+
+- name: Resolve the Caddy architecture slug for this host
+  ansible.builtin.set_fact:
+    openclaw_gateway_caddy_arch: "{{ openclaw_gateway_prep_caddy_arch_map.get(ansible_architecture, '') }}"
+  when: openclaw_gateway_caddy_enabled
+
+- name: Assert the gateway architecture is supported for Caddy
+  ansible.builtin.assert:
+    that:
+      - openclaw_gateway_caddy_arch | length > 0
+    fail_msg: "Unsupported gateway architecture for Caddy: {{ ansible_architecture }}"
+  when: openclaw_gateway_caddy_enabled
+
+- name: Ensure the Caddy system group exists
+  ansible.builtin.group:
+    name: caddy
+    system: true
+    state: present
+  when: openclaw_gateway_caddy_enabled
+
+- name: Ensure the Caddy system user exists
+  ansible.builtin.user:
+    name: caddy
+    group: caddy
+    home: "{{ openclaw_gateway_prep_caddy_data_dir }}"
+    create_home: true
+    shell: /usr/sbin/nologin
+    system: true
+    state: present
+  when: openclaw_gateway_caddy_enabled
+
+- name: Ensure the Caddy config directory exists
+  ansible.builtin.file:
+    path: "{{ openclaw_gateway_prep_caddy_config_dir }}"
+    state: directory
+    owner: root
+    group: caddy
+    mode: "0750"
+  when: openclaw_gateway_caddy_enabled
+
+- name: Ensure the Caddy data directory exists
+  ansible.builtin.file:
+    path: "{{ openclaw_gateway_prep_caddy_data_dir }}"
+    state: directory
+    owner: caddy
+    group: caddy
+    mode: "0755"
+  when: openclaw_gateway_caddy_enabled
+
+- name: Read the installed Caddy version
+  ansible.builtin.command:
+    argv:
+      - "{{ openclaw_gateway_prep_caddy_binary_path }}"
+      - version
+  register: openclaw_gateway_caddy_version
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: openclaw_gateway_caddy_enabled
+
+- name: Verify the installed Caddy binary includes the Cloudflare plugin
+  ansible.builtin.command:
+    argv:
+      - "{{ openclaw_gateway_prep_caddy_binary_path }}"
+      - list-modules
+  register: openclaw_gateway_caddy_modules
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: openclaw_gateway_caddy_enabled
+
+- name: Determine whether the pinned custom Caddy binary must be installed
+  ansible.builtin.set_fact:
+    openclaw_gateway_caddy_install_required: >-
+      {{
+        openclaw_gateway_caddy_version.rc != 0
+        or not (openclaw_gateway_caddy_version.stdout | trim).startswith('v' ~ openclaw_gateway_prep_caddy_version)
+        or 'dns.providers.cloudflare' not in (openclaw_gateway_caddy_modules.stdout_lines | default([]))
+      }}
+  when: openclaw_gateway_caddy_enabled
+
+- name: Install the pinned custom Caddy binary
+  ansible.builtin.get_url:
+    url: >-
+      {{ 'https://caddyserver.com/api/download?os=linux&arch=' ~ openclaw_gateway_caddy_arch ~ '&p=' ~ openclaw_gateway_prep_caddy_plugin ~ '&v=' ~ openclaw_gateway_prep_caddy_version }}
+    dest: "{{ openclaw_gateway_prep_caddy_binary_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart Caddy
+  when:
+    - openclaw_gateway_caddy_enabled
+    - openclaw_gateway_caddy_install_required
+
+- name: Read installed Caddy modules after any install step
+  ansible.builtin.command:
+    argv:
+      - "{{ openclaw_gateway_prep_caddy_binary_path }}"
+      - list-modules
+  register: openclaw_gateway_caddy_modules
+  changed_when: false
+  check_mode: false
+  when: openclaw_gateway_caddy_enabled
+
+- name: Assert the installed Caddy binary includes the Cloudflare plugin
+  ansible.builtin.assert:
+    that:
+      - "'dns.providers.cloudflare' in openclaw_gateway_caddy_modules.stdout_lines"
+    fail_msg: "The managed Caddy binary does not include the Cloudflare DNS plugin"
+  when: openclaw_gateway_caddy_enabled
+
+- name: Install the Caddy service unit
+  ansible.builtin.template:
+    src: caddy.service.j2
+    dest: "{{ openclaw_gateway_prep_caddy_service_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload Systemd
+    - Restart Caddy
+  when: openclaw_gateway_caddy_enabled
+
+- name: Install the Caddy environment file
+  ansible.builtin.copy:
+    dest: "{{ openclaw_gateway_prep_caddy_env_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      CLOUDFLARE_API_TOKEN={{ openclaw_gateway_cloudflare_api_token | default('') }}
+  no_log: true
+  notify: Restart Caddy
+  when: openclaw_gateway_caddy_enabled
+
+- name: Install the gateway Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: "{{ openclaw_gateway_prep_caddy_config_path }}"
+    owner: root
+    group: caddy
+    mode: "0640"
+  notify: Restart Caddy
+  when: openclaw_gateway_caddy_enabled
+
+- name: Validate the gateway Caddy config
+  ansible.builtin.command:
+    argv:
+      - "{{ openclaw_gateway_prep_caddy_binary_path }}"
+      - validate
+      - --config
+      - "{{ openclaw_gateway_prep_caddy_config_path }}"
+      - --adapter
+      - caddyfile
+  environment:
+    CLOUDFLARE_API_TOKEN: "{{ openclaw_gateway_cloudflare_api_token | default('') }}"
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: openclaw_gateway_caddy_enabled
+
+- name: Apply pending Caddy handler changes before service enablement
+  ansible.builtin.meta: flush_handlers
+  when: openclaw_gateway_caddy_enabled
+
+- name: Ensure the Caddy service is enabled and running
+  ansible.builtin.systemd_service:
+    name: caddy
+    enabled: true
+    state: started
+  when: openclaw_gateway_caddy_enabled

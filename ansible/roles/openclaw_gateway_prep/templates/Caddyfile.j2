@@ -1,0 +1,7 @@
+{{ gateway_caddy.hostname }} {
+    tls {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+    }
+
+    reverse_proxy {{ gateway_caddy.upstream }}
+}

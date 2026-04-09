@@ -1,0 +1,63 @@
+#!/bin/bash
+set -euo pipefail
+
+VENV_BIN=".venv/bin"
+ANSIBLE_PLAYBOOK_BIN="$VENV_BIN/ansible-playbook"
+ENV_NAME="${ENV_NAME:-home}"
+INVENTORY_FILE="${1:-ansible/inventories/$ENV_NAME/generated.yml}"
+PLAYBOOK_FILE="${2:-ansible/playbooks/site.yml}"
+KNOWN_HOSTS_FILE=".ansible/known_hosts"
+if [ "$#" -ge 1 ]; then
+  shift
+fi
+if [ "$#" -ge 1 ]; then
+  shift
+fi
+TMP_VARS="$(mktemp /tmp/homelab-pve-ansible-secrets.XXXXXX)"
+TMP_BOOTSTRAP_KEY="$(mktemp /tmp/homelab-pve-bootstrap-key.XXXXXX)"
+TMP_OPERATOR_KEY="$(mktemp /tmp/homelab-pve-operator-key.XXXXXX)"
+export ANSIBLE_CONFIG="ansible/ansible.cfg"
+export ANSIBLE_HOME=".ansible"
+export ANSIBLE_LOCAL_TEMP=".ansible/tmp"
+
+if [ ! -f Makefile ]; then
+  printf 'Run this script from the repository root.\n' >&2
+  exit 1
+fi
+
+cleanup() {
+  rm -f "$TMP_VARS"
+  rm -f "$TMP_BOOTSTRAP_KEY"
+  rm -f "$TMP_OPERATOR_KEY"
+}
+trap cleanup EXIT INT TERM
+
+if [ ! -x "$ANSIBLE_PLAYBOOK_BIN" ]; then
+  printf "Missing %s. Run 'make bootstrap' first.\n" "$ANSIBLE_PLAYBOOK_BIN" >&2
+  exit 1
+fi
+
+if [ ! -f "$INVENTORY_FILE" ]; then
+  printf "Missing %s. Run 'make inventory' first.\n" "$INVENTORY_FILE" >&2
+  exit 1
+fi
+
+if [ ! -s "$KNOWN_HOSTS_FILE" ]; then
+  printf "Missing %s. Run 'make ENV=%s ansible-known-hosts' first.\n" "$KNOWN_HOSTS_FILE" "$ENV_NAME" >&2
+  exit 1
+fi
+
+./scripts/render-ansible-secrets > "$TMP_VARS"
+./scripts/render-ansible-ssh-key > "$TMP_BOOTSTRAP_KEY"
+./scripts/render-ansible-operator-ssh-key > "$TMP_OPERATOR_KEY"
+./scripts/assert-rendered-secrets "$TMP_VARS" "Rendered Ansible variables"
+./scripts/assert-rendered-secrets "$TMP_BOOTSTRAP_KEY" "Rendered bootstrap SSH key"
+./scripts/assert-rendered-secrets "$TMP_OPERATOR_KEY" "Rendered operator SSH key"
+chmod 600 "$TMP_BOOTSTRAP_KEY" "$TMP_OPERATOR_KEY"
+
+exec "$ANSIBLE_PLAYBOOK_BIN" -i "$INVENTORY_FILE" "$PLAYBOOK_FILE" \
+  --ssh-common-args="-o UserKnownHostsFile=$KNOWN_HOSTS_FILE -o StrictHostKeyChecking=yes" \
+  --extra-vars "@$TMP_VARS" \
+  --extra-vars "bootstrap_ssh_private_key_file=$TMP_BOOTSTRAP_KEY" \
+  --extra-vars "cluster_operator_ssh_private_key_file=$TMP_OPERATOR_KEY" \
+  "$@"

@@ -1,0 +1,15 @@
+.ansible/
+.git/
+.terraform/
+.venv/
+.vscode/
+ansible/artifacts/
+ansible/inventories/*/generated.yml
+build/
+dist/
+kubernetes/manifests/homepage/assets/
+node_modules/
+terraform/.terraform/
+terraform/envs/*/*.rendered.tfvars
+terraform/envs/*/generated.auto.tfvars.json
+*.log

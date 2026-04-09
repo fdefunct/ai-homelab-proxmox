@@ -1,0 +1,77 @@
+- name: Normalize LXC TUN device access config
+  delegate_to: pve-0
+  ansible.builtin.shell: |
+    set -euo pipefail
+    python3 - <<'PY' "{{ container_ct_id }}"
+    import sys
+    from pathlib import Path
+
+    ct_id = sys.argv[1]
+    path = Path(f"/etc/pve/lxc/{ct_id}.conf")
+    desired = [
+        "lxc.cgroup2.devices.allow: c 10:200 rwm",
+        "lxc.mount.entry: /dev/net dev/net none bind,create=dir",
+    ]
+
+    lines = path.read_text().splitlines()
+    filtered = [
+        line for line in lines
+        if not (
+            line.startswith("lxc.cgroup2.devices.allow:")
+            or line.startswith("lxc.cdev.allow:")
+            or line.startswith("lxc.mount.entry: /dev/net")
+        )
+    ]
+    updated = filtered + desired
+
+    if updated == lines:
+        raise SystemExit(0)
+
+    path.write_text("\n".join(updated) + "\n")
+    raise SystemExit(3)
+    PY
+  args:
+    executable: /bin/bash
+  register: lxc_tun_config
+  changed_when: lxc_tun_config.rc == 3
+  failed_when: lxc_tun_config.rc not in [0, 3]
+  check_mode: false
+  notify: Reboot LXC container
+
+- name: Flush handlers to apply TUN config before starting
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure LXC container is running
+  delegate_to: pve-0
+  ansible.builtin.command:
+    argv:
+      - pct
+      - start
+      - "{{ container_ct_id }}"
+  register: pct_start
+  failed_when: pct_start.rc != 0 and 'already running' not in (pct_start.stderr | default(''))
+  changed_when: pct_start.rc == 0
+  check_mode: false
+
+- name: Wait for SSH connectivity to container
+  ansible.builtin.wait_for_connection:
+    delay: 5
+    timeout: 60
+  check_mode: false
+
+- name: Gather facts after container is reachable
+  ansible.builtin.setup:
+
+- name: Refresh apt metadata for the container bootstrap
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  changed_when: false
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - ethtool
+    state: present

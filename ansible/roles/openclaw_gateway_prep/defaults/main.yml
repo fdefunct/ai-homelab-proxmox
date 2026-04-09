@@ -1,0 +1,11 @@
+openclaw_gateway_prep_caddy_version: "2.11.2"
+openclaw_gateway_prep_caddy_plugin: "github.com/caddy-dns/cloudflare"
+openclaw_gateway_prep_caddy_binary_path: /usr/local/bin/caddy
+openclaw_gateway_prep_caddy_config_dir: /etc/caddy
+openclaw_gateway_prep_caddy_config_path: /etc/caddy/Caddyfile
+openclaw_gateway_prep_caddy_env_path: /etc/default/caddy
+openclaw_gateway_prep_caddy_service_path: /etc/systemd/system/caddy.service
+openclaw_gateway_prep_caddy_data_dir: /var/lib/caddy
+openclaw_gateway_prep_caddy_arch_map:
+  x86_64: amd64
+  amd64: amd64
